@@ -9,7 +9,6 @@ export const setToken = async (t: string | null) => {
   if (t) await AsyncStorage.setItem(TOKEN_KEY, t);
   else await AsyncStorage.removeItem(TOKEN_KEY);
 };
-
 export const getToken = async () => AsyncStorage.getItem(TOKEN_KEY);
 
 async function req(path: string, opts: RequestInit = {}) {
@@ -24,7 +23,7 @@ async function req(path: string, opts: RequestInit = {}) {
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
     const msg = data?.detail || "حدث خطأ";
-    throw new Error(msg);
+    throw new Error(typeof msg === "string" ? msg : "حدث خطأ");
   }
   return data;
 }
@@ -37,28 +36,46 @@ const crud = (name: string) => ({
 });
 
 export const api = {
-  register: (email: string, password: string, full_name: string) =>
-    req("/auth/register", { method: "POST", body: JSON.stringify({ email, password, full_name }) }),
-  login: (email: string, password: string) =>
-    req("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
+  authStatus: () => req("/auth/status"),
+  adminSetup: (full_name: string, phone: string, password: string) =>
+    req("/auth/admin-setup", { method: "POST", body: JSON.stringify({ full_name, phone, password }) }),
+  register: (full_name: string, phone: string) =>
+    req("/auth/register", { method: "POST", body: JSON.stringify({ full_name, phone }) }),
+  login: (phone: string, password: string) =>
+    req("/auth/login", { method: "POST", body: JSON.stringify({ phone, password }) }),
   me: () => req("/auth/me"),
-  seed: () => req("/seed", { method: "POST" }),
+  changePassword: (new_password: string) =>
+    req("/auth/change-password", { method: "POST", body: JSON.stringify({ new_password }) }),
 
   users: {
     list: () => req("/users"),
     pending: () => req("/users/pending"),
     update: (id: string, b: any) => req(`/users/${id}`, { method: "PUT", body: JSON.stringify(b) }),
     delete: (id: string) => req(`/users/${id}`, { method: "DELETE" }),
+    approve: (id: string) => req(`/users/${id}/approve`, { method: "POST" }),
+    resetPassword: (id: string) => req(`/users/${id}/reset-password`, { method: "POST" }),
+    notifyMessage: (data: { temp_password: string; phone: string; full_name: string }) =>
+      req("/users/notify-message", { method: "POST", body: JSON.stringify(data) }),
   },
 
   dashboard: () => req("/stats/dashboard"),
   violationsMonthly: () => req("/stats/violations-monthly"),
+  maintenanceMonthly: () => req("/stats/maintenance-monthly"),
+  fuelMonthly: () => req("/stats/fuel-monthly"),
+  accidentsMonthly: () => req("/stats/accidents-monthly"),
   violationsByVehicle: () => req("/stats/violations-by-vehicle"),
   maintenanceStatus: () => req("/stats/maintenance-status"),
-  fuelMonthly: () => req("/stats/fuel-monthly"),
   fuelByVehicle: () => req("/stats/fuel-by-vehicle"),
+  fuelAlerts: () => req("/stats/fuel-alerts"),
   accidentsSummary: () => req("/stats/accidents-summary"),
+
   vehicleHistory: (id: string) => req(`/vehicles/${id}/history`),
+  locationDetails: (id: string) => req(`/locations/${id}/details`),
+
+  scheduleOnDate: (dateStr?: string) => req(`/schedule/on-date${dateStr ? `?date_str=${dateStr}` : ""}`),
+  scheduleWeek: () => req("/schedule/week"),
+
+  violationNotifyInfo: (id: string) => req(`/violations/${id}/notify-info`),
 
   locations: crud("locations"),
   employees: crud("employees"),

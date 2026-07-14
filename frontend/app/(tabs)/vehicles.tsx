@@ -6,6 +6,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { api } from "@/src/api";
 import { theme } from "@/src/theme";
 import { FormSheet, Field, inputStyle } from "@/src/FormSheet";
+import { SearchPicker } from "@/src/SearchPicker";
 import { useAuth } from "@/src/auth";
 import { chooseImage } from "@/src/helpers";
 
@@ -26,13 +27,13 @@ export default function VehiclesScreen() {
   const [filter, setFilter] = useState("all");
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
-  const [form, setForm] = useState<any>({ plate_number: "", model: "", year: "", color: "", location_id: null, driver_id: null, status: "active" });
+  const [form, setForm] = useState<any>({});
 
   const load = useCallback(async () => {
     try {
       const [v, l, e] = await Promise.all([api.vehicles.list(), api.locations.list(), api.employees.list()]);
       setVehicles(v); setLocations(l); setEmployees(e);
-    } catch (err) {}
+    } catch {}
     setLoading(false);
   }, []);
 
@@ -52,14 +53,10 @@ export default function VehiclesScreen() {
   };
 
   const submit = async () => {
-    if (!form.plate_number || !form.model) {
-      Alert.alert("خطأ", "يرجى إدخال رقم اللوحة والموديل");
-      return;
-    }
+    if (!form.plate_number || !form.model) return Alert.alert("خطأ", "يرجى إدخال رقم اللوحة والموديل");
     const body = { ...form, year: form.year ? parseInt(form.year) : null };
     try {
-      if (editing) await api.vehicles.update(editing.id, body);
-      else await api.vehicles.create(body);
+      if (editing) await api.vehicles.update(editing.id, body); else await api.vehicles.create(body);
       setSheetOpen(false);
       load();
     } catch (e: any) { Alert.alert("خطأ", e.message); }
@@ -68,7 +65,7 @@ export default function VehiclesScreen() {
   const remove = (v: any) => {
     Alert.alert("حذف السيارة", `هل تريد حذف ${v.plate_number}؟`, [
       { text: "إلغاء", style: "cancel" },
-      { text: "حذف", style: "destructive", onPress: async () => { await api.vehicles.delete(v.id); load(); } },
+      { text: "حذف", style: "destructive", onPress: async () => { try { await api.vehicles.delete(v.id); load(); } catch (e: any) { Alert.alert("خطأ", e.message); } } },
     ]);
   };
 
@@ -78,12 +75,15 @@ export default function VehiclesScreen() {
     return true;
   });
 
-  const filterChips = [
+  const chips = [
     { key: "all", label: "الكل" },
     { key: "active", label: "نشطة" },
     { key: "maintenance", label: "قيد الصيانة" },
     { key: "out_of_service", label: "خارج الخدمة" },
   ];
+
+  const locationItems = locations.map(l => ({ id: l.id, name: l.name, sub: l.address }));
+  const employeeItems = employees.map(e => ({ id: e.id, name: e.name, sub: e.employee_number || "" }));
 
   return (
     <SafeAreaView style={styles.root} edges={["top"]}>
@@ -98,31 +98,16 @@ export default function VehiclesScreen() {
 
       <View style={styles.searchRow}>
         <Ionicons name="search" size={18} color={theme.colors.onSurfaceTertiary} />
-        <TextInput
-          testID="vehicle-search"
-          style={styles.searchInput}
-          value={search}
-          onChangeText={setSearch}
-          placeholder="ابحث برقم اللوحة أو الموديل"
-          placeholderTextColor={theme.colors.onSurfaceTertiary}
-          textAlign="right"
-        />
+        <TextInput testID="vehicle-search" style={styles.searchInput} value={search} onChangeText={setSearch} placeholder="ابحث برقم اللوحة أو الموديل" placeholderTextColor={theme.colors.onSurfaceTertiary} textAlign="right" />
       </View>
 
       <View style={styles.chipRowWrap}>
         <FlatList
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          data={filterChips}
-          keyExtractor={(item) => item.key}
+          horizontal showsHorizontalScrollIndicator={false} inverted
+          data={chips} keyExtractor={(i) => i.key}
           contentContainerStyle={{ paddingHorizontal: theme.spacing.md, gap: 8 }}
-          inverted
           renderItem={({ item }) => (
-            <Pressable
-              testID={`filter-${item.key}`}
-              onPress={() => setFilter(item.key)}
-              style={[styles.chip, filter === item.key && styles.chipActive]}
-            >
+            <Pressable testID={`filter-${item.key}`} onPress={() => setFilter(item.key)} style={[styles.chip, filter === item.key && styles.chipActive]}>
               <Text style={[styles.chipText, filter === item.key && styles.chipTextActive]}>{item.label}</Text>
             </Pressable>
           )}
@@ -147,14 +132,19 @@ export default function VehiclesScreen() {
             const drv = employees.find(e => e.id === item.driver_id);
             const st = STATUS_MAP[item.status] || STATUS_MAP.active;
             return (
-              <Pressable testID={`vehicle-card-${item.id}`} style={styles.card} onLongPress={() => {
-                if (!isAdmin) return;
-                Alert.alert("خيارات", item.plate_number, [
-                  { text: "تعديل", onPress: () => openEdit(item) },
-                  { text: "حذف", style: "destructive", onPress: () => remove(item) },
-                  { text: "إلغاء", style: "cancel" },
-                ]);
-              }} onPress={() => router.push({ pathname: "/vehicle/[id]", params: { id: item.id } })}>
+              <Pressable
+                testID={`vehicle-card-${item.id}`}
+                style={styles.card}
+                onLongPress={() => {
+                  if (!isAdmin) return;
+                  Alert.alert("خيارات", item.plate_number, [
+                    { text: "تعديل", onPress: () => openEdit(item) },
+                    { text: "حذف", style: "destructive", onPress: () => remove(item) },
+                    { text: "إلغاء", style: "cancel" },
+                  ]);
+                }}
+                onPress={() => router.push({ pathname: "/vehicle/[id]", params: { id: item.id } })}
+              >
                 <View style={styles.cardTop}>
                   <View style={styles.iconBox}><Ionicons name="car-sport" size={22} color={theme.colors.brandPrimary} /></View>
                   <View style={{ flex: 1 }}>
@@ -183,28 +173,24 @@ export default function VehiclesScreen() {
         onSubmit={submit}
         testID="vehicle-form-sheet"
       >
-        <Field label="رقم اللوحة *">
-          <TextInput style={inputStyle} value={form.plate_number} onChangeText={(t) => setForm({ ...form, plate_number: t })} testID="vf-plate" />
-        </Field>
-        <Field label="الموديل *">
-          <TextInput style={inputStyle} value={form.model} onChangeText={(t) => setForm({ ...form, model: t })} testID="vf-model" />
-        </Field>
-        <Field label="سنة الصنع">
-          <TextInput style={inputStyle} value={form.year} onChangeText={(t) => setForm({ ...form, year: t })} keyboardType="numeric" />
-        </Field>
-        <Field label="اللون">
-          <TextInput style={inputStyle} value={form.color} onChangeText={(t) => setForm({ ...form, color: t })} />
-        </Field>
+        <Field label="رقم اللوحة *"><TextInput style={inputStyle} value={form.plate_number} onChangeText={(t) => setForm({ ...form, plate_number: t })} testID="vf-plate" /></Field>
+        <Field label="الموديل *"><TextInput style={inputStyle} value={form.model} onChangeText={(t) => setForm({ ...form, model: t })} testID="vf-model" /></Field>
+        <Field label="سنة الصنع"><TextInput style={inputStyle} value={form.year} onChangeText={(t) => setForm({ ...form, year: t })} keyboardType="numeric" /></Field>
+        <Field label="اللون"><TextInput style={inputStyle} value={form.color} onChangeText={(t) => setForm({ ...form, color: t })} /></Field>
         <Field label="الحالة">
-          <PickerRow value={form.status} onChange={(v) => setForm({ ...form, status: v })} options={[
-            { value: "active", label: "نشطة" }, { value: "maintenance", label: "قيد الصيانة" }, { value: "out_of_service", label: "خارج الخدمة" }
-          ]} />
+          <View style={{ flexDirection: "row-reverse", gap: 6, flexWrap: "wrap" }}>
+            {["active", "maintenance", "out_of_service"].map(s => (
+              <Pressable key={s} onPress={() => setForm({ ...form, status: s })} style={[styles.pill, form.status === s && styles.pillActive]}>
+                <Text style={[styles.pillText, form.status === s && { color: "#fff" }]}>{STATUS_MAP[s].label}</Text>
+              </Pressable>
+            ))}
+          </View>
         </Field>
         <Field label="المقر">
-          <PickerRow value={form.location_id} onChange={(v) => setForm({ ...form, location_id: v })} options={[{ value: null, label: "غير محدد" }, ...locations.map(l => ({ value: l.id, label: l.name }))]} />
+          <SearchPicker label="اختر المقر" items={locationItems} value={form.location_id} onChange={(v) => setForm({ ...form, location_id: v })} testID="veh-location-picker" />
         </Field>
-        <Field label="السائق">
-          <PickerRow value={form.driver_id} onChange={(v) => setForm({ ...form, driver_id: v })} options={[{ value: null, label: "غير محدد" }, ...employees.map(e => ({ value: e.id, label: e.name }))]} />
+        <Field label="السائق / المسؤول">
+          <SearchPicker label="اختر موظف" items={employeeItems} value={form.driver_id} onChange={(v) => setForm({ ...form, driver_id: v })} testID="veh-driver-picker" />
         </Field>
         <Field label="صورة السيارة">
           {form.photo ? (
@@ -235,55 +221,19 @@ const Meta = ({ icon, text }: any) => (
   </View>
 );
 
-export const PickerRow = ({ value, onChange, options }: any) => (
-  <FlatList
-    horizontal
-    inverted
-    showsHorizontalScrollIndicator={false}
-    data={options}
-    keyExtractor={(item) => String(item.value)}
-    contentContainerStyle={{ gap: 6, paddingVertical: 4 }}
-    renderItem={({ item }) => (
-      <Pressable
-        onPress={() => onChange(item.value)}
-        style={{
-          paddingHorizontal: 14, paddingVertical: 8, borderRadius: theme.radius.pill,
-          backgroundColor: value === item.value ? theme.colors.brandPrimary : theme.colors.surface,
-          borderWidth: 1, borderColor: value === item.value ? theme.colors.brandPrimary : theme.colors.border,
-        }}
-      >
-        <Text style={{ color: value === item.value ? "#fff" : theme.colors.onSurface, fontSize: 13, fontWeight: "600" }}>{item.label}</Text>
-      </Pressable>
-    )}
-  />
-);
-
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: theme.colors.surface },
   header: { flexDirection: "row-reverse", justifyContent: "space-between", alignItems: "center", padding: theme.spacing.lg },
   title: { fontSize: 24, fontWeight: "700", color: theme.colors.onSurface },
   addBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: theme.colors.brandPrimary, alignItems: "center", justifyContent: "center" },
-  searchRow: {
-    flexDirection: "row-reverse", alignItems: "center", gap: 8,
-    marginHorizontal: theme.spacing.lg, backgroundColor: theme.colors.surfaceSecondary,
-    borderRadius: theme.radius.md, paddingHorizontal: theme.spacing.md,
-    borderWidth: 1, borderColor: theme.colors.border,
-  },
+  searchRow: { flexDirection: "row-reverse", alignItems: "center", gap: 8, marginHorizontal: theme.spacing.lg, backgroundColor: theme.colors.surfaceSecondary, borderRadius: theme.radius.md, paddingHorizontal: theme.spacing.md, borderWidth: 1, borderColor: theme.colors.border },
   searchInput: { flex: 1, paddingVertical: 10, fontSize: 14, color: theme.colors.onSurface, writingDirection: "rtl" },
   chipRowWrap: { height: 56, justifyContent: "center", marginTop: 4 },
-  chip: {
-    height: 36, paddingHorizontal: 16, borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.surfaceSecondary,
-    borderWidth: 1, borderColor: theme.colors.border,
-    alignItems: "center", justifyContent: "center", flexShrink: 0,
-  },
+  chip: { height: 36, paddingHorizontal: 16, borderRadius: theme.radius.pill, backgroundColor: theme.colors.surfaceSecondary, borderWidth: 1, borderColor: theme.colors.border, alignItems: "center", justifyContent: "center", flexShrink: 0 },
   chipActive: { backgroundColor: theme.colors.brandPrimary, borderColor: theme.colors.brandPrimary },
   chipText: { fontSize: 13, color: theme.colors.onSurfaceSecondary, fontWeight: "600" },
   chipTextActive: { color: "#fff" },
-  card: {
-    backgroundColor: theme.colors.surfaceSecondary, borderRadius: theme.radius.md,
-    padding: theme.spacing.md, marginBottom: theme.spacing.sm, borderWidth: 1, borderColor: theme.colors.border,
-  },
+  card: { backgroundColor: theme.colors.surfaceSecondary, borderRadius: theme.radius.md, padding: theme.spacing.md, marginBottom: theme.spacing.sm, borderWidth: 1, borderColor: theme.colors.border },
   cardTop: { flexDirection: "row-reverse", alignItems: "center", gap: theme.spacing.md },
   iconBox: { width: 44, height: 44, borderRadius: 22, backgroundColor: theme.colors.brandTertiary, alignItems: "center", justifyContent: "center" },
   plate: { fontSize: 16, fontWeight: "700", color: theme.colors.onSurface, textAlign: "right" },
@@ -293,4 +243,7 @@ const styles = StyleSheet.create({
   cardMeta: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 12, marginTop: theme.spacing.sm, paddingTop: theme.spacing.sm, borderTopWidth: 1, borderTopColor: theme.colors.divider },
   empty: { alignItems: "center", paddingVertical: 60, gap: 12 },
   emptyText: { fontSize: 14, color: theme.colors.onSurfaceTertiary },
+  pill: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: theme.radius.pill, backgroundColor: theme.colors.surface, borderWidth: 1, borderColor: theme.colors.border },
+  pillActive: { backgroundColor: theme.colors.brandPrimary, borderColor: theme.colors.brandPrimary },
+  pillText: { fontSize: 13, color: theme.colors.onSurface, fontWeight: "600" },
 });

@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 3 of Medan (ميدان) fully tested. Backend: 41/41 pytest tests PASSED (100%) covering phone-based auth (status/setup/register/login/change-password/reset), admin-setup 400 arabic on re-run, approval flow returns temp_password + phone+full_name, first login must_change_password=true then cleared, 5 real Makkah locations auto-seeded (المبنى الرئيسي، المركز العام للنقل، المجلس التنسيقي، مبنى منى، المنطقة المركزية), no demo data, employees drop salary silently + employee_number + group A/B/C/D/none, leaves conflict check (same location + same group + overlap = 400 with تعارض, different group and non-overlapping pass), fuel with no liters field in create/response, schedule 8-day cycle anchored at 2026-07-16 (day=A/night=B; 2026-07-20 C/D; 2026-07-24 wraps to A/B), schedule/week returns 14 entries, fuel-alerts returns list, monthly stats (maintenance/fuel/accidents) return 6 arabic months, location details returns scoped employees+vehicles, violation notify-info returns 966-prefixed phone + arabic message containing خصم and amount then marks notified=true, users/notify-message returns arabic whatsapp template, admin-only guards return 403 with 'مسموحة للمدير فقط' on 7 collections + /users list, all endpoints return 401 without token. Frontend (390x844 mobile): /login shows testIDs (login-phone-input, login-password-input, login-submit-button, go-to-register-link). Admin login (0556728911/Bassam123) → /dashboard: greeting 'مرحباً بسام الحربي', role 'مدير عمليات', 'مناوبة اليوم — 2026-07-14 نهار مجموعة C / ليل مجموعة D' rendered correctly, banner '1 حساب بانتظار موافقتك' (from earlier test-created user), 8 KPI cards, 6 secondary cards (fuel/accidents/maintenance-year). /users lists admin (معتمد) + 'كلمة مرور جديدة' button + pending user with 'قبول وإرسال كلمة المرور' + 'رفض'. /schedule shows 4 group cards (A B C D) with hours + 'الجدول القادم (14 يوم)'. /reports shows 4 tabs (المخالفات، الصيانة، الوقود، الحوادث) + monthly trend area + 'مشاركة PDF' + 'مشاركة Excel' buttons. /about shows بسام الحربي 0556728911. /employees management shows 7 sub-tabs (الموظفين، المقرات، الإجازات، الصيانة، الوقود، الحوادث، المخالفات) with search input + '+ إضافة موظف'. No red screen. No breaking console errors — only benign expo-notifications web warning and pointerEvents deprecation.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "expo-router _layout", "issue": "Console warning: 'Too many screens defined. Route \"violations\" is extraneous.' — a Stack.Screen for 'violations' is declared in the layout but no route file exists (or vice versa). Non-blocking but should be cleaned. Reference: /app/frontend/app/_layout.tsx (or /(tabs)/_layout.tsx)"},
+      {"component": "expo-notifications (web)", "issue": "Benign warning: '[expo-notifications] Listening to push token changes is not yet fully supported on web'. Expected on web preview only. Reference: /app/frontend/src/notifications.ts"},
+      {"component": "react-native-web internals", "issue": "'props.pointerEvents is deprecated. Use style.pointerEvents' — leaks from expo-router/RN internals; non-blocking."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Minor) Clean the extraneous 'violations' Stack.Screen entry from the tabs/root layout to remove the 'Too many screens defined' warning.",
+    "(Cosmetic) Refactor class-scoped fixtures defined as instance methods to @classmethod in backend_test.py to silence PytestRemovedIn10Warning (won't affect functionality)."
+  ],
+  "critical_code_review_comments": [
+    "Solid: phone normalization to 966E164, temp password randomization, JWT auth flow, must_change_password gating.",
+    "Solid: leaves conflict logic checks same location_id + same group + status=approved + date overlap, ignores group='none', correctly excludes self.",
+    "Solid: fuel model no longer contains liters field — verified in schema and roundtrip response.",
+    "Solid: schedule 8-day cycle anchored at 2026-07-16 wraps correctly (verified 3 dates + full 14-day sweep).",
+    "Solid: 5 real Makkah locations auto-seed only on admin-setup and startup guard prevents demo data leaks.",
+    "Solid: /violations/{id}/notify-info marks notified=true (idempotent), returns 400 if employee has no phone.",
+    "Solid: admin-only require_admin dep guards all mutating endpoints uniformly with arabic detail 'هذه العملية مسموحة للمدير فقط'.",
+    "Minor: server.py still uses @app.on_event('startup'|'shutdown') — deprecated in FastAPI ≥0.100 (use lifespan). Same as previous iteration.",
+    "Minor: /auth/register when zero users returns 400 'يجب إعداد حساب المدير أولاً' — good UX but could redirect FE to setup automatically (already handled via /auth/status)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (completely rewritten for iteration 3: 41 tests, phone-based auth + all new endpoints + admin guards)"
+  ],
+  "success_rate": {
+    "backend": "100% (41/41)",
+    "frontend": "100% of tested flows: /login (testIDs OK) → /dashboard (schedule, KPIs, pending banner), /users (approve modal button visible), /schedule (4 groups + 14 day), /reports (4 tabs + PDF/Excel), /about (Bassam+phone), /employees (7 sub-tabs + search + add), no salary/liters in UI"
+  },
+  "seed_data_creation": "Admin already set up (0556728911/Bassam123). 5 real Makkah locations auto-seeded. Test-created data prefixed TEST_ and cleaned up after each test class. One pending user was left over from an earlier test (not by this run) and is visible in /users.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend URL: EXPO_PUBLIC_BACKEND_URL. Admin credentials: phone 0556728911 password Bassam123 (normalized 966556728911). Schedule anchor: 2026-07-16 Thursday → day=A, night=B. Days 0-3 A/B, days 4-7 C/D. Valid groups: A,B,C,D,none. Valid positions: 'رجل أمن','مشرف أمن','مدير عمليات'. Leave conflict requires: same location_id + same group + non-'none' group + overlapping dates + both status=approved. Frontend testIDs on login: login-phone-input, login-password-input, login-submit-button, go-to-register-link, login-screen. Approve button text: 'قبول وإرسال كلمة المرور'. Bottom tabs (5): الرئيسية/السيارات/الإدارة/التقارير/المزيد. Management screen has 7 sub-tabs. Fuel form has no liters field (verified in POST /fuel_records response). Violation notify-info requires employee to have phone else 400.",
+  "rca_of_issue": "N/A — no bugs found. All iteration-3 requirements are correctly implemented on both backend and frontend."
+}

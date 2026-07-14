@@ -6,20 +6,22 @@ export type UserStatus = "pending" | "approved" | "rejected";
 
 type User = {
   id: string;
-  email: string;
+  phone: string;
   full_name: string;
   role: Role;
   status: UserStatus;
+  must_change_password?: boolean;
 } | null;
-
-type LoginResult = { pending?: boolean; message?: string };
 
 type Ctx = {
   user: User;
   loading: boolean;
   isAdmin: boolean;
-  login: (e: string, p: string) => Promise<void>;
-  register: (e: string, p: string, n: string) => Promise<LoginResult>;
+  adminExists: boolean | null;
+  login: (phone: string, password: string) => Promise<{ mustChange?: boolean }>;
+  register: (full_name: string, phone: string) => Promise<{ pending: boolean; message?: string }>;
+  adminSetup: (full_name: string, phone: string, password: string) => Promise<void>;
+  changePassword: (new_password: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
 };
@@ -35,6 +37,7 @@ export const useAuth = () => {
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User>(null);
   const [loading, setLoading] = useState(true);
+  const [adminExists, setAdminExists] = useState<boolean | null>(null);
 
   const refresh = async () => {
     try {
@@ -48,26 +51,39 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   useEffect(() => {
     (async () => {
+      try {
+        const s = await api.authStatus();
+        setAdminExists(!!s.admin_exists);
+      } catch {}
       const t = await getToken();
       if (t) await refresh();
       setLoading(false);
     })();
   }, []);
 
-  const login = async (email: string, password: string) => {
-    const res = await api.login(email, password);
+  const login = async (phone: string, password: string) => {
+    const res = await api.login(phone, password);
     await setToken(res.access_token);
     setUser(res.user);
+    setAdminExists(true);
+    return { mustChange: !!res.user.must_change_password };
   };
 
-  const register = async (email: string, password: string, name: string) => {
-    const res = await api.register(email, password, name);
-    if (res.pending) {
-      return { pending: true, message: res.message };
-    }
+  const register = async (full_name: string, phone: string) => {
+    const res = await api.register(full_name, phone);
+    return { pending: !!res.pending, message: res.message };
+  };
+
+  const adminSetup = async (full_name: string, phone: string, password: string) => {
+    const res = await api.adminSetup(full_name, phone, password);
     await setToken(res.access_token);
     setUser(res.user);
-    return { pending: false };
+    setAdminExists(true);
+  };
+
+  const changePassword = async (new_password: string) => {
+    await api.changePassword(new_password);
+    await refresh();
   };
 
   const logout = async () => {
@@ -76,7 +92,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   return (
-    <AuthCtx.Provider value={{ user, loading, isAdmin: user?.role === "admin", login, register, logout, refresh }}>
+    <AuthCtx.Provider value={{ user, loading, isAdmin: user?.role === "admin", adminExists, login, register, adminSetup, changePassword, logout, refresh }}>
       {children}
     </AuthCtx.Provider>
   );

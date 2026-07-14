@@ -1,15 +1,13 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status
+from fastapi import FastAPI, APIRouter, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-import os
-import logging
+import os, logging, uuid, secrets, string, re
 from pathlib import Path
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field
 from typing import List, Optional
-import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 
@@ -22,7 +20,7 @@ db = client[os.environ['DB_NAME']]
 
 SECRET_KEY = os.environ.get("JWT_SECRET", "medan-field-work-secret-key-change-in-production")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_DAYS = 7
+ACCESS_TOKEN_EXPIRE_DAYS = 30
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -42,11 +40,33 @@ def verify_password(pw: str, hashed: str) -> bool:
     return pwd_context.verify(pw, hashed)
 
 
-def create_access_token(data: dict) -> str:
-    to_encode = data.copy()
+def normalize_phone(phone: str) -> str:
+    """Normalize Saudi phone number to E.164-ish digits: 05x... => 9665x..., +9665x => 9665x"""
+    if not phone:
+        return ""
+    digits = re.sub(r"[^0-9]", "", phone)
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if digits.startswith("966"):
+        return digits
+    if digits.startswith("0"):
+        digits = digits[1:]
+        return "966" + digits
+    if digits.startswith("5") and len(digits) == 9:
+        return "966" + digits
+    return digits
+
+
+def gen_temp_password(length: int = 8) -> str:
+    """Generate a memorable temp password: 4 letters + 4 digits."""
+    letters = string.ascii_uppercase.replace("O", "").replace("I", "").replace("L", "")
+    digits = string.digits.replace("0", "").replace("1", "")
+    return "".join(secrets.choice(letters) for _ in range(4)) + "".join(secrets.choice(digits) for _ in range(4))
+
+
+def create_access_token(user_id: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS)
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode({"sub": user_id, "exp": expire}, SECRET_KEY, algorithm=ALGORITHM)
 
 
 async def get_current_user(creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)):
@@ -59,7 +79,7 @@ async def get_current_user(creds: Optional[HTTPAuthorizationCredentials] = Depen
             raise HTTPException(status_code=401, detail="Invalid token")
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
-    user = await db.users.find_one({"id": user_id}, {"_id": 0, "hashed_password": 0})
+    user = await db.users.find_one({"id": user_id}, {"_id": 0, "hashed_password": 0, "temp_password_plain": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     if user.get("status") != "approved":
@@ -73,20 +93,46 @@ def require_admin(user: dict = Depends(get_current_user)):
     return user
 
 
+# ============ SCHEDULE ============
+# Cycle: 8 days. Anchor = Thursday 2026-07-16 (day 0)
+# Days 0..3: A day-shift (06-18), B night-shift (18-06)
+# Days 4..7: C day-shift (06-18), D night-shift (18-06)
+SCHEDULE_ANCHOR = date(2026, 7, 16)
+
+def groups_for_date(d: date) -> dict:
+    diff = (d - SCHEDULE_ANCHOR).days
+    pos = diff % 8
+    if pos < 0:
+        pos += 8
+    if pos < 4:
+        return {"day": "A", "night": "B", "cycle_pos": pos, "cycle_of": "AB"}
+    return {"day": "C", "night": "D", "cycle_pos": pos - 4, "cycle_of": "CD"}
+
+
 # ============ MODELS ============
 class UserRegister(BaseModel):
-    email: EmailStr
-    password: str
     full_name: str
+    phone: str
 
-class UserLogin(BaseModel):
-    email: EmailStr
+class UserLoginPhone(BaseModel):
+    phone: str
     password: str
+
+class ChangePassword(BaseModel):
+    new_password: str
+
+class AdminSetup(BaseModel):
+    """First-time admin setup with custom password"""
+    full_name: str
+    phone: str
+    password: str
+
 
 class Location(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     address: str
+    region: Optional[str] = "مكة"
     phone: Optional[str] = ""
     manager: Optional[str] = ""
     created_at: str = Field(default_factory=now_iso)
@@ -94,8 +140,13 @@ class Location(BaseModel):
 class LocationCreate(BaseModel):
     name: str
     address: str
+    region: Optional[str] = "مكة"
     phone: Optional[str] = ""
     manager: Optional[str] = ""
+
+
+VALID_GROUPS = ["A", "B", "C", "D", "none"]
+VALID_POSITIONS = ["رجل أمن", "مشرف أمن", "مدير عمليات"]
 
 class Employee(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -103,7 +154,8 @@ class Employee(BaseModel):
     employee_number: Optional[str] = ""
     national_id: Optional[str] = ""
     phone: Optional[str] = ""
-    position: Optional[str] = ""
+    position: Optional[str] = "رجل أمن"
+    group: Optional[str] = "none"
     location_id: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
 
@@ -112,8 +164,10 @@ class EmployeeCreate(BaseModel):
     employee_number: Optional[str] = ""
     national_id: Optional[str] = ""
     phone: Optional[str] = ""
-    position: Optional[str] = ""
+    position: Optional[str] = "رجل أمن"
+    group: Optional[str] = "none"
     location_id: Optional[str] = None
+
 
 class Vehicle(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -137,9 +191,11 @@ class VehicleCreate(BaseModel):
     status: str = "active"
     photo: Optional[str] = ""
 
+
 class Maintenance(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     vehicle_id: str
+    employee_id: Optional[str] = None
     maintenance_type: str
     description: Optional[str] = ""
     cost: float = 0
@@ -150,12 +206,14 @@ class Maintenance(BaseModel):
 
 class MaintenanceCreate(BaseModel):
     vehicle_id: str
+    employee_id: Optional[str] = None
     maintenance_type: str
     description: Optional[str] = ""
     cost: float = 0
     date: str
     status: str = "completed"
     next_due_date: Optional[str] = None
+
 
 class Violation(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -168,6 +226,7 @@ class Violation(BaseModel):
     status: str = "unpaid"
     photo: Optional[str] = ""
     notes: Optional[str] = ""
+    notified: bool = False
     created_at: str = Field(default_factory=now_iso)
 
 class ViolationCreate(BaseModel):
@@ -181,10 +240,11 @@ class ViolationCreate(BaseModel):
     photo: Optional[str] = ""
     notes: Optional[str] = ""
 
+
 class Leave(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     employee_id: str
-    leave_type: str
+    leave_type: str = "سنوية"
     start_date: str
     end_date: str
     reason: Optional[str] = ""
@@ -193,19 +253,18 @@ class Leave(BaseModel):
 
 class LeaveCreate(BaseModel):
     employee_id: str
-    leave_type: str
+    leave_type: str = "سنوية"
     start_date: str
     end_date: str
     reason: Optional[str] = ""
     status: str = "approved"
 
-# New: fuel, accidents, assignments
+
 class FuelRecord(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     vehicle_id: str
     employee_id: Optional[str] = None
     date: str
-    liters: float = 0
     cost: float = 0
     odometer_before: Optional[float] = 0
     odometer_after: Optional[float] = 0
@@ -218,13 +277,13 @@ class FuelRecordCreate(BaseModel):
     vehicle_id: str
     employee_id: Optional[str] = None
     date: str
-    liters: float = 0
     cost: float = 0
     odometer_before: Optional[float] = 0
     odometer_after: Optional[float] = 0
     photo_before: Optional[str] = ""
     photo_after: Optional[str] = ""
     notes: Optional[str] = ""
+
 
 class Accident(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -234,7 +293,7 @@ class Accident(BaseModel):
     description: str
     fault_percentage: float = 0
     cost: float = 0
-    status: str = "open"  # open, closed
+    status: str = "open"
     location: Optional[str] = ""
     photos: List[str] = Field(default_factory=list)
     notes: Optional[str] = ""
@@ -252,8 +311,8 @@ class AccidentCreate(BaseModel):
     photos: List[str] = Field(default_factory=list)
     notes: Optional[str] = ""
 
+
 class Assignment(BaseModel):
-    """يحدد اي سيارة كانت مع اي موظف في اي فترة"""
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     vehicle_id: str
     employee_id: str
@@ -270,59 +329,103 @@ class AssignmentCreate(BaseModel):
     notes: Optional[str] = ""
 
 
+# ============ SEED LOCATIONS (idempotent, real data only) ============
+REAL_LOCATIONS = [
+    {"name": "المبنى الرئيسي", "address": "المنطقة مكة، حي الزايدي"},
+    {"name": "المركز العام للنقل", "address": "المنطقة مكة، حي الخالدية"},
+    {"name": "المجلس التنسيقي", "address": "المنطقة مكة، المشاعر المقدسة"},
+    {"name": "مبنى منى", "address": "المنطقة مكة، المشاعر المقدسة"},
+    {"name": "المنطقة المركزية", "address": "المنطقة مكة المكرمة، بجوار الحرم"},
+]
+
+async def ensure_real_locations():
+    for loc in REAL_LOCATIONS:
+        existing = await db.locations.find_one({"name": loc["name"]})
+        if not existing:
+            item = Location(name=loc["name"], address=loc["address"])
+            await db.locations.insert_one(item.dict())
+
+
 # ============ AUTH ============
+@api_router.post("/auth/admin-setup")
+async def admin_setup(body: AdminSetup):
+    """First-time setup: creates the initial admin. Only works if no user exists."""
+    if await db.users.count_documents({}) > 0:
+        raise HTTPException(status_code=400, detail="تم إعداد المدير مسبقاً")
+    phone = normalize_phone(body.phone)
+    if len(phone) < 10:
+        raise HTTPException(status_code=400, detail="رقم الجوال غير صحيح")
+    user_id = str(uuid.uuid4())
+    await db.users.insert_one({
+        "id": user_id,
+        "full_name": body.full_name,
+        "phone": phone,
+        "hashed_password": hash_password(body.password),
+        "role": "admin",
+        "status": "approved",
+        "must_change_password": False,
+        "created_at": now_iso(),
+    })
+    await ensure_real_locations()
+    token = create_access_token(user_id)
+    return {"access_token": token, "user": {"id": user_id, "full_name": body.full_name, "phone": phone, "role": "admin", "status": "approved", "must_change_password": False}}
+
+
 @api_router.post("/auth/register")
 async def register(body: UserRegister):
-    existing = await db.users.find_one({"email": body.email})
+    """Request an account: only phone + name. Admin will approve and issue temp password."""
+    phone = normalize_phone(body.phone)
+    if len(phone) < 10:
+        raise HTTPException(status_code=400, detail="رقم الجوال غير صحيح")
+    existing = await db.users.find_one({"phone": phone})
     if existing:
-        raise HTTPException(status_code=400, detail="البريد الإلكتروني مسجل مسبقاً")
+        raise HTTPException(status_code=400, detail="رقم الجوال مسجل مسبقاً")
 
-    # First user becomes admin & auto-approved; subsequent users are pending guards
     is_first = (await db.users.count_documents({}) == 0)
-    role = "admin" if is_first else "guard"
-    user_status = "approved" if is_first else "pending"
+    if is_first:
+        # Bootstrap: first ever user becomes admin without password (they must call /auth/admin-setup)
+        raise HTTPException(status_code=400, detail="يجب إعداد حساب المدير أولاً")
 
     user_id = str(uuid.uuid4())
-    user_doc = {
+    await db.users.insert_one({
         "id": user_id,
-        "email": body.email,
         "full_name": body.full_name,
-        "hashed_password": hash_password(body.password),
-        "role": role,
-        "status": user_status,
+        "phone": phone,
+        "hashed_password": "",
+        "role": "guard",
+        "status": "pending",
+        "must_change_password": True,
         "created_at": now_iso(),
-    }
-    await db.users.insert_one(user_doc)
-
-    if user_status != "approved":
-        return {
-            "pending": True,
-            "message": "تم تسجيل حسابك. بانتظار موافقة المدير للدخول."
-        }
-
-    token = create_access_token({"sub": user_id, "email": body.email})
-    return {
-        "pending": False,
-        "access_token": token,
-        "user": {"id": user_id, "email": body.email, "full_name": body.full_name, "role": role, "status": user_status},
-    }
+    })
+    return {"pending": True, "message": "تم استلام طلبك. سيتم إشعار المدير للموافقة وإرسال كلمة المرور عبر واتساب."}
 
 
 @api_router.post("/auth/login")
-async def login(body: UserLogin):
-    user = await db.users.find_one({"email": body.email})
-    if not user or not verify_password(body.password, user["hashed_password"]):
+async def login(body: UserLoginPhone):
+    phone = normalize_phone(body.phone)
+    user = await db.users.find_one({"phone": phone})
+    if not user or not user.get("hashed_password") or not verify_password(body.password, user["hashed_password"]):
         raise HTTPException(status_code=401, detail="بيانات الدخول غير صحيحة")
     if user.get("status") == "pending":
         raise HTTPException(status_code=403, detail="حسابك بانتظار موافقة المدير")
     if user.get("status") == "rejected":
         raise HTTPException(status_code=403, detail="تم رفض حسابك. تواصل مع المدير")
-    token = create_access_token({"sub": user["id"], "email": user["email"]})
+    token = create_access_token(user["id"])
     return {
-        "pending": False,
         "access_token": token,
-        "user": {"id": user["id"], "email": user["email"], "full_name": user["full_name"], "role": user.get("role", "guard"), "status": user.get("status", "approved")},
+        "user": {
+            "id": user["id"], "phone": user["phone"], "full_name": user["full_name"],
+            "role": user.get("role", "guard"), "status": user.get("status", "approved"),
+            "must_change_password": user.get("must_change_password", False),
+        },
     }
+
+
+@api_router.get("/auth/status")
+async def auth_status():
+    """Check if admin exists — used by frontend to decide onboarding vs login."""
+    count = await db.users.count_documents({})
+    return {"admin_exists": count > 0}
 
 
 @api_router.get("/auth/me")
@@ -330,23 +433,61 @@ async def me(current_user: dict = Depends(get_current_user)):
     return current_user
 
 
-# ============ USER MANAGEMENT (admin only) ============
+@api_router.post("/auth/change-password")
+async def change_password(body: ChangePassword, current_user: dict = Depends(get_current_user)):
+    if len(body.new_password) < 6:
+        raise HTTPException(status_code=400, detail="كلمة المرور يجب ألا تقل عن 6 أحرف")
+    await db.users.update_one(
+        {"id": current_user["id"]},
+        {"$set": {"hashed_password": hash_password(body.new_password), "must_change_password": False}}
+    )
+    return {"ok": True}
+
+
+# ============ USER MGMT (admin only) ============
 @api_router.get("/users")
 async def list_users(current_user: dict = Depends(require_admin)):
-    docs = await db.users.find({}, {"_id": 0, "hashed_password": 0}).to_list(1000)
-    return docs
+    return await db.users.find({}, {"_id": 0, "hashed_password": 0, "temp_password_plain": 0}).to_list(1000)
 
 @api_router.get("/users/pending")
 async def pending_users(current_user: dict = Depends(require_admin)):
-    docs = await db.users.find({"status": "pending"}, {"_id": 0, "hashed_password": 0}).to_list(1000)
-    return docs
+    return await db.users.find({"status": "pending"}, {"_id": 0, "hashed_password": 0, "temp_password_plain": 0}).to_list(1000)
 
-class UserApproval(BaseModel):
+
+@api_router.post("/users/{uid}/approve")
+async def approve_user(uid: str, current_user: dict = Depends(require_admin)):
+    """Approves user + issues a one-time password. Returns the plaintext password (once) so admin can share via WhatsApp."""
+    u = await db.users.find_one({"id": uid})
+    if not u:
+        raise HTTPException(404, "المستخدم غير موجود")
+    temp = gen_temp_password()
+    await db.users.update_one({"id": uid}, {"$set": {
+        "hashed_password": hash_password(temp),
+        "status": "approved",
+        "must_change_password": True,
+    }})
+    return {"ok": True, "temp_password": temp, "phone": u["phone"], "full_name": u["full_name"]}
+
+
+@api_router.post("/users/{uid}/reset-password")
+async def reset_password(uid: str, current_user: dict = Depends(require_admin)):
+    u = await db.users.find_one({"id": uid})
+    if not u:
+        raise HTTPException(404, "المستخدم غير موجود")
+    temp = gen_temp_password()
+    await db.users.update_one({"id": uid}, {"$set": {
+        "hashed_password": hash_password(temp),
+        "must_change_password": True,
+    }})
+    return {"ok": True, "temp_password": temp, "phone": u["phone"], "full_name": u["full_name"]}
+
+
+class UserPatch(BaseModel):
     role: Optional[str] = None
     status: Optional[str] = None
 
 @api_router.put("/users/{uid}")
-async def update_user(uid: str, body: UserApproval, current_user: dict = Depends(require_admin)):
+async def update_user(uid: str, body: UserPatch, current_user: dict = Depends(require_admin)):
     if uid == current_user["id"] and body.role and body.role != "admin":
         raise HTTPException(status_code=400, detail="لا يمكنك تغيير دورك كمدير")
     update = {}
@@ -357,8 +498,7 @@ async def update_user(uid: str, body: UserApproval, current_user: dict = Depends
     if not update:
         raise HTTPException(status_code=400, detail="لا يوجد تغيير")
     await db.users.update_one({"id": uid}, {"$set": update})
-    doc = await db.users.find_one({"id": uid}, {"_id": 0, "hashed_password": 0})
-    return doc
+    return await db.users.find_one({"id": uid}, {"_id": 0, "hashed_password": 0, "temp_password_plain": 0})
 
 @api_router.delete("/users/{uid}")
 async def delete_user(uid: str, current_user: dict = Depends(require_admin)):
@@ -368,18 +508,13 @@ async def delete_user(uid: str, current_user: dict = Depends(require_admin)):
     return {"ok": True}
 
 
-# ============ CRUD helper builder ============
+# ============ CRUD helper ============
 def _crud(coll_name: str, model, model_create):
-    """Register standard CRUD routes for a collection.
-    - GET list: any authenticated user
-    - POST/PUT/DELETE: admin only
-    """
     async def list_all(current_user: dict = Depends(get_current_user)):
         sort_field = "created_at"
         if coll_name in ("maintenance", "violations", "fuel_records", "accidents"):
             sort_field = "date"
-        docs = await db[coll_name].find({}, {"_id": 0}).sort(sort_field, -1).to_list(2000)
-        return docs
+        return await db[coll_name].find({}, {"_id": 0}).sort(sort_field, -1).to_list(2000)
 
     async def create_one(body: model_create, current_user: dict = Depends(require_admin)):  # type: ignore
         item = model(**body.dict())
@@ -400,14 +535,13 @@ def _crud(coll_name: str, model, model_create):
     return list_all, create_one, update_one, delete_one
 
 
-# Register CRUD for all resources
+# Note: we don't auto-register leaves through the helper because it needs conflict-check.
 for _name, _model, _mc in [
     ("locations", Location, LocationCreate),
     ("employees", Employee, EmployeeCreate),
     ("vehicles", Vehicle, VehicleCreate),
     ("maintenance", Maintenance, MaintenanceCreate),
     ("violations", Violation, ViolationCreate),
-    ("leaves", Leave, LeaveCreate),
     ("fuel_records", FuelRecord, FuelRecordCreate),
     ("accidents", Accident, AccidentCreate),
     ("assignments", Assignment, AssignmentCreate),
@@ -419,7 +553,78 @@ for _name, _model, _mc in [
     api_router.add_api_route(f"/{_name}/{{item_id}}", _delete, methods=["DELETE"])
 
 
+# ============ LEAVES with conflict check ============
+@api_router.get("/leaves", response_model=List[Leave])
+async def list_leaves(current_user: dict = Depends(get_current_user)):
+    return await db.leaves.find({}, {"_id": 0}).sort("start_date", -1).to_list(2000)
+
+def _dates_overlap(a_start: str, a_end: str, b_start: str, b_end: str) -> bool:
+    return not (a_end < b_start or a_start > b_end)
+
+async def _check_leave_conflict(employee_id: str, start_date: str, end_date: str, exclude_id: Optional[str] = None):
+    emp = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not emp:
+        raise HTTPException(400, "الموظف غير موجود")
+    if not emp.get("location_id") or not emp.get("group") or emp.get("group") == "none":
+        return  # employee not tied to a group/location — no conflict check
+    same_peers = await db.employees.find({
+        "location_id": emp["location_id"],
+        "group": emp["group"],
+        "id": {"$ne": employee_id},
+    }, {"_id": 0, "id": 1, "name": 1}).to_list(500)
+    peer_ids = [p["id"] for p in same_peers]
+    if not peer_ids:
+        return
+    query = {"employee_id": {"$in": peer_ids}, "status": "approved"}
+    if exclude_id:
+        query["id"] = {"$ne": exclude_id}
+    async for lv in db.leaves.find(query, {"_id": 0}):
+        if _dates_overlap(start_date, end_date, lv["start_date"], lv["end_date"]):
+            conflict_emp = next((p["name"] for p in same_peers if p["id"] == lv["employee_id"]), "زميل")
+            raise HTTPException(400, detail=f"يوجد تعارض: الموظف {conflict_emp} في نفس المجموعة والمقر لديه إجازة معتمدة تتقاطع مع هذه الفترة")
+
+@api_router.post("/leaves", response_model=Leave)
+async def create_leave(body: LeaveCreate, current_user: dict = Depends(require_admin)):
+    if body.status == "approved":
+        await _check_leave_conflict(body.employee_id, body.start_date, body.end_date)
+    lv = Leave(**body.dict())
+    await db.leaves.insert_one(lv.dict())
+    return lv
+
+@api_router.put("/leaves/{lv_id}", response_model=Leave)
+async def update_leave(lv_id: str, body: LeaveCreate, current_user: dict = Depends(require_admin)):
+    if body.status == "approved":
+        await _check_leave_conflict(body.employee_id, body.start_date, body.end_date, exclude_id=lv_id)
+    await db.leaves.update_one({"id": lv_id}, {"$set": body.dict()})
+    doc = await db.leaves.find_one({"id": lv_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "غير موجود")
+    return doc
+
+@api_router.delete("/leaves/{lv_id}")
+async def delete_leave(lv_id: str, current_user: dict = Depends(require_admin)):
+    await db.leaves.delete_one({"id": lv_id})
+    return {"ok": True}
+
+
 # ============ STATS ============
+def year_month_prefix(y, m):
+    return f"{y:04d}-{m:02d}"
+
+def last_6_months():
+    now = datetime.now(timezone.utc)
+    months = []
+    for i in range(5, -1, -1):
+        year = now.year
+        month = now.month - i
+        while month <= 0:
+            month += 12
+            year -= 1
+        months.append((year, month))
+    return months
+
+AR_MONTHS = ["", "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"]
+
 @api_router.get("/stats/dashboard")
 async def dashboard_stats(current_user: dict = Depends(get_current_user)):
     today = datetime.now(timezone.utc).date().isoformat()
@@ -442,9 +647,9 @@ async def dashboard_stats(current_user: dict = Depends(get_current_user)):
             active_leaves += 1
 
     upcoming_maint = 0
-    thirty_days = (datetime.now(timezone.utc) + timedelta(days=30)).date().isoformat()
+    thirty = (datetime.now(timezone.utc) + timedelta(days=30)).date().isoformat()
     async for m in db.maintenance.find({}, {"_id": 0, "next_due_date": 1}):
-        if m.get("next_due_date") and today <= m["next_due_date"] <= thirty_days:
+        if m.get("next_due_date") and today <= m["next_due_date"] <= thirty:
             upcoming_maint += 1
 
     year_prefix = str(datetime.now(timezone.utc).year)
@@ -454,12 +659,10 @@ async def dashboard_stats(current_user: dict = Depends(get_current_user)):
             maint_cost += m.get("cost", 0)
 
     fuel_cost = 0
-    fuel_liters = 0
     fuel_count = 0
-    async for f in db.fuel_records.find({}, {"_id": 0, "date": 1, "cost": 1, "liters": 1}):
+    async for f in db.fuel_records.find({}, {"_id": 0, "date": 1, "cost": 1}):
         if f.get("date", "").startswith(year_prefix):
             fuel_cost += f.get("cost", 0)
-            fuel_liters += f.get("liters", 0)
             fuel_count += 1
 
     accident_cost = 0
@@ -468,49 +671,44 @@ async def dashboard_stats(current_user: dict = Depends(get_current_user)):
             accident_cost += a.get("cost", 0)
 
     return {
-        "total_vehicles": total_vehicles,
-        "active_vehicles": active_vehicles,
-        "in_maintenance": in_maintenance,
-        "total_employees": total_employees,
-        "total_locations": total_locations,
-        "unpaid_violations": unpaid_violations,
-        "unpaid_amount": unpaid_amount,
-        "active_leaves": active_leaves,
-        "upcoming_maintenance": upcoming_maint,
-        "maintenance_cost_year": maint_cost,
-        "open_accidents": open_accidents,
-        "pending_users": pending_users,
-        "fuel_cost_year": fuel_cost,
-        "fuel_liters_year": fuel_liters,
-        "fuel_count_year": fuel_count,
-        "accident_cost_year": accident_cost,
+        "total_vehicles": total_vehicles, "active_vehicles": active_vehicles, "in_maintenance": in_maintenance,
+        "total_employees": total_employees, "total_locations": total_locations,
+        "unpaid_violations": unpaid_violations, "unpaid_amount": unpaid_amount,
+        "active_leaves": active_leaves, "upcoming_maintenance": upcoming_maint,
+        "maintenance_cost_year": maint_cost, "open_accidents": open_accidents,
+        "pending_users": pending_users, "fuel_cost_year": fuel_cost,
+        "fuel_count_year": fuel_count, "accident_cost_year": accident_cost,
     }
 
 
+async def _monthly_agg(coll: str, amount_field: str = "cost"):
+    result = []
+    for (y, m) in last_6_months():
+        prefix = year_month_prefix(y, m)
+        total = 0
+        count = 0
+        async for d in db[coll].find({}, {"_id": 0, "date": 1, amount_field: 1}):
+            if d.get("date", "").startswith(prefix):
+                total += d.get(amount_field, 0) or 0
+                count += 1
+        result.append({"label": AR_MONTHS[m], "count": count, "amount": round(total, 2)})
+    return result
+
 @api_router.get("/stats/violations-monthly")
 async def violations_monthly(current_user: dict = Depends(get_current_user)):
-    now = datetime.now(timezone.utc)
-    months = []
-    for i in range(5, -1, -1):
-        year = now.year
-        month = now.month - i
-        while month <= 0:
-            month += 12
-            year -= 1
-        months.append((year, month))
+    return await _monthly_agg("violations", "amount")
 
-    ar_months = ["", "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"]
-    result = []
-    for (y, m) in months:
-        prefix = f"{y:04d}-{m:02d}"
-        count = 0
-        amount = 0
-        async for v in db.violations.find({}, {"_id": 0, "date": 1, "amount": 1}):
-            if v.get("date", "").startswith(prefix):
-                count += 1
-                amount += v.get("amount", 0)
-        result.append({"label": ar_months[m], "count": count, "amount": amount})
-    return result
+@api_router.get("/stats/maintenance-monthly")
+async def maintenance_monthly(current_user: dict = Depends(get_current_user)):
+    return await _monthly_agg("maintenance", "cost")
+
+@api_router.get("/stats/fuel-monthly")
+async def fuel_monthly(current_user: dict = Depends(get_current_user)):
+    return await _monthly_agg("fuel_records", "cost")
+
+@api_router.get("/stats/accidents-monthly")
+async def accidents_monthly(current_user: dict = Depends(get_current_user)):
+    return await _monthly_agg("accidents", "cost")
 
 
 @api_router.get("/stats/violations-by-vehicle")
@@ -529,53 +727,23 @@ async def violations_by_vehicle(current_user: dict = Depends(get_current_user)):
     result.sort(key=lambda x: x["count"], reverse=True)
     return result[:10]
 
-
 @api_router.get("/stats/maintenance-status")
 async def maintenance_status(current_user: dict = Depends(get_current_user)):
-    completed = await db.maintenance.count_documents({"status": "completed"})
-    pending = await db.maintenance.count_documents({"status": "pending"})
-    upcoming = await db.maintenance.count_documents({"status": "upcoming"})
-    return {"completed": completed, "pending": pending, "upcoming": upcoming}
-
-
-@api_router.get("/stats/fuel-monthly")
-async def fuel_monthly(current_user: dict = Depends(get_current_user)):
-    now = datetime.now(timezone.utc)
-    months = []
-    for i in range(5, -1, -1):
-        year = now.year
-        month = now.month - i
-        while month <= 0:
-            month += 12
-            year -= 1
-        months.append((year, month))
-    ar_months = ["", "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"]
-    result = []
-    for (y, m) in months:
-        prefix = f"{y:04d}-{m:02d}"
-        liters = 0
-        cost = 0
-        count = 0
-        async for f in db.fuel_records.find({}, {"_id": 0, "date": 1, "liters": 1, "cost": 1}):
-            if f.get("date", "").startswith(prefix):
-                liters += f.get("liters", 0)
-                cost += f.get("cost", 0)
-                count += 1
-        result.append({"label": ar_months[m], "liters": round(liters, 1), "cost": cost, "count": count})
-    return result
-
+    return {
+        "completed": await db.maintenance.count_documents({"status": "completed"}),
+        "pending": await db.maintenance.count_documents({"status": "pending"}),
+        "upcoming": await db.maintenance.count_documents({"status": "upcoming"}),
+    }
 
 @api_router.get("/stats/fuel-by-vehicle")
 async def fuel_by_vehicle(current_user: dict = Depends(get_current_user)):
-    """يحسب استهلاك الوقود لكل سيارة"""
     vehicles = {v["id"]: v for v in await db.vehicles.find({}, {"_id": 0}).to_list(1000)}
     by_v = {}
     async for f in db.fuel_records.find({}, {"_id": 0}).sort("date", 1):
         vid = f["vehicle_id"]
         if vid not in by_v:
-            by_v[vid] = {"count": 0, "liters": 0, "cost": 0, "distance": 0}
+            by_v[vid] = {"count": 0, "cost": 0, "distance": 0}
         by_v[vid]["count"] += 1
-        by_v[vid]["liters"] += f.get("liters", 0)
         by_v[vid]["cost"] += f.get("cost", 0)
         if f.get("odometer_after") and f.get("odometer_before"):
             d = f["odometer_after"] - f["odometer_before"]
@@ -584,19 +752,50 @@ async def fuel_by_vehicle(current_user: dict = Depends(get_current_user)):
     result = []
     for vid, data in by_v.items():
         veh = vehicles.get(vid, {})
-        consumption = (data["liters"] / data["distance"] * 100) if data["distance"] > 0 else 0
         result.append({
-            "vehicle_id": vid,
-            "plate": veh.get("plate_number", "غير معروف"),
-            "count": data["count"],
-            "liters": round(data["liters"], 1),
-            "cost": data["cost"],
+            "vehicle_id": vid, "plate": veh.get("plate_number", "غير معروف"),
+            "count": data["count"], "cost": data["cost"],
             "distance": round(data["distance"], 1),
-            "consumption_l_100km": round(consumption, 2),
         })
-    result.sort(key=lambda x: x["count"], reverse=True)
+    result.sort(key=lambda x: x["cost"], reverse=True)
     return result
 
+@api_router.get("/stats/fuel-alerts")
+async def fuel_alerts(current_user: dict = Depends(get_current_user)):
+    """Returns vehicles whose monthly fuel cost this month exceeds their average of the last 6 months."""
+    now = datetime.now(timezone.utc)
+    cur_prefix = f"{now.year:04d}-{now.month:02d}"
+    # Get all fuel records
+    by_v_current = {}
+    by_v_history = {}
+    async for f in db.fuel_records.find({}, {"_id": 0}):
+        vid = f["vehicle_id"]
+        d = f.get("date", "")
+        cost = f.get("cost", 0) or 0
+        if d.startswith(cur_prefix):
+            by_v_current[vid] = by_v_current.get(vid, 0) + cost
+        else:
+            month = d[:7]  # yyyy-mm
+            if not month:
+                continue
+            by_v_history.setdefault(vid, {}).setdefault(month, 0)
+            by_v_history[vid][month] += cost
+    vehicles = {v["id"]: v for v in await db.vehicles.find({}, {"_id": 0}).to_list(1000)}
+    alerts = []
+    for vid, cur in by_v_current.items():
+        hist = by_v_history.get(vid, {})
+        if not hist:
+            continue
+        avg = sum(hist.values()) / len(hist)
+        if cur > avg * 1.2 and avg > 0:  # 20% above average
+            veh = vehicles.get(vid, {})
+            alerts.append({
+                "vehicle_id": vid, "plate": veh.get("plate_number", "غير معروف"),
+                "current_month_cost": round(cur, 2), "average": round(avg, 2),
+                "increase_percent": round((cur - avg) / avg * 100, 1),
+            })
+    alerts.sort(key=lambda x: x["increase_percent"], reverse=True)
+    return alerts
 
 @api_router.get("/stats/accidents-summary")
 async def accidents_summary(current_user: dict = Depends(get_current_user)):
@@ -610,13 +809,12 @@ async def accidents_summary(current_user: dict = Depends(get_current_user)):
         total_cost += a.get("cost", 0)
         fault_sum += a.get("fault_percentage", 0)
         fault_n += 1
-    avg_fault = (fault_sum / fault_n) if fault_n else 0
-    return {"total": total, "open": open_, "closed": closed, "total_cost": total_cost, "average_fault": round(avg_fault, 1)}
+    return {"total": total, "open": open_, "closed": closed, "total_cost": total_cost, "average_fault": round((fault_sum/fault_n) if fault_n else 0, 1)}
 
 
+# ============ VEHICLE HISTORY ============
 @api_router.get("/vehicles/{vid}/history")
 async def vehicle_history(vid: str, current_user: dict = Depends(get_current_user)):
-    """يرجع تاريخ سيارة كامل: صيانة، مخالفات، وقود، حوادث، أصحاب سابقون"""
     vehicle = await db.vehicles.find_one({"id": vid}, {"_id": 0})
     if not vehicle:
         raise HTTPException(404, "السيارة غير موجودة")
@@ -625,110 +823,123 @@ async def vehicle_history(vid: str, current_user: dict = Depends(get_current_use
     fuel = await db.fuel_records.find({"vehicle_id": vid}, {"_id": 0}).sort("date", -1).to_list(500)
     accs = await db.accidents.find({"vehicle_id": vid}, {"_id": 0}).sort("date", -1).to_list(500)
     assigns = await db.assignments.find({"vehicle_id": vid}, {"_id": 0}).sort("start_date", -1).to_list(500)
-
     total_maint = sum(m.get("cost", 0) for m in maint)
     total_viol = sum(v.get("amount", 0) for v in viols)
     total_fuel = sum(f.get("cost", 0) for f in fuel)
     total_acc = sum(a.get("cost", 0) for a in accs)
-
     return {
-        "vehicle": vehicle,
-        "maintenance": maint,
-        "violations": viols,
-        "fuel_records": fuel,
-        "accidents": accs,
-        "assignments": assigns,
+        "vehicle": vehicle, "maintenance": maint, "violations": viols,
+        "fuel_records": fuel, "accidents": accs, "assignments": assigns,
         "totals": {
-            "maintenance_cost": total_maint,
-            "violations_amount": total_viol,
-            "fuel_cost": total_fuel,
-            "accident_cost": total_acc,
+            "maintenance_cost": total_maint, "violations_amount": total_viol,
+            "fuel_cost": total_fuel, "accident_cost": total_acc,
             "grand_total": total_maint + total_viol + total_fuel + total_acc,
         }
     }
 
 
-# ============ SEED ============
-@api_router.post("/seed")
-async def seed_demo(current_user: dict = Depends(require_admin)):
-    if await db.locations.count_documents({}) > 0:
-        return {"seeded": False, "message": "البيانات موجودة بالفعل"}
+# ============ LOCATION DETAILS ============
+@api_router.get("/locations/{lid}/details")
+async def location_details(lid: str, current_user: dict = Depends(get_current_user)):
+    loc = await db.locations.find_one({"id": lid}, {"_id": 0})
+    if not loc:
+        raise HTTPException(404, "المقر غير موجود")
+    emps = await db.employees.find({"location_id": lid}, {"_id": 0}).to_list(500)
+    vehs = await db.vehicles.find({"location_id": lid}, {"_id": 0}).to_list(500)
+    return {"location": loc, "employees": emps, "vehicles": vehs}
 
-    loc1 = Location(name="المقر الرئيسي - الرياض", address="الرياض، حي العليا", phone="0112345678", manager="أحمد العتيبي")
-    loc2 = Location(name="فرع جدة", address="جدة، حي الروضة", phone="0123456789", manager="خالد الحربي")
-    loc3 = Location(name="فرع الدمام", address="الدمام، الشاطئ", phone="0134567890", manager="محمد الشمري")
-    await db.locations.insert_many([loc1.dict(), loc2.dict(), loc3.dict()])
 
-    emp1 = Employee(name="سعد المطيري", employee_number="EMP-001", national_id="1234567890", phone="966501111111", position="رجل أمن", location_id=loc1.id)
-    emp2 = Employee(name="فهد القحطاني", employee_number="EMP-002", national_id="1234567891", phone="966502222222", position="رجل أمن", location_id=loc1.id)
-    emp3 = Employee(name="عبدالله الغامدي", employee_number="EMP-003", national_id="1234567892", phone="966503333333", position="مشرف أمن", location_id=loc2.id)
-    emp4 = Employee(name="ناصر الدوسري", employee_number="EMP-004", national_id="1234567893", phone="966504444444", position="رجل أمن", location_id=loc3.id)
-    await db.employees.insert_many([emp1.dict(), emp2.dict(), emp3.dict(), emp4.dict()])
+# ============ SCHEDULE ============
+@api_router.get("/schedule/on-date")
+async def schedule_on_date(date_str: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+    """Returns the groups working on a given date (default: today)."""
+    if date_str:
+        try:
+            d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(400, "صيغة التاريخ يجب YYYY-MM-DD")
+    else:
+        d = datetime.now(timezone.utc).date()
+    info = groups_for_date(d)
+    return {
+        "date": d.isoformat(),
+        **info,
+        "day_shift": {"group": info["day"], "hours": "06:00 - 18:00"},
+        "night_shift": {"group": info["night"], "hours": "18:00 - 06:00"},
+    }
 
-    today = datetime.now(timezone.utc)
-    def days_ago(n): return (today - timedelta(days=n)).date().isoformat()
-    def days_from_now(n): return (today + timedelta(days=n)).date().isoformat()
+@api_router.get("/schedule/week")
+async def schedule_week(current_user: dict = Depends(get_current_user)):
+    """Returns 14-day schedule starting today."""
+    today = datetime.now(timezone.utc).date()
+    result = []
+    for i in range(14):
+        d = today + timedelta(days=i)
+        info = groups_for_date(d)
+        result.append({"date": d.isoformat(), **info})
+    return result
 
-    v1 = Vehicle(plate_number="أ ب ج 1234", model="تويوتا هايلوكس", year=2022, color="أبيض", location_id=loc1.id, driver_id=emp1.id, status="active")
-    v2 = Vehicle(plate_number="د هـ و 5678", model="نيسان باترول", year=2021, color="فضي", location_id=loc1.id, driver_id=emp2.id, status="active")
-    v3 = Vehicle(plate_number="ز ح ط 9012", model="فورد رينجر", year=2020, color="أسود", location_id=loc2.id, driver_id=emp3.id, status="maintenance")
-    v4 = Vehicle(plate_number="ي ك ل 3456", model="ايسوزو دي ماكس", year=2023, color="أزرق", location_id=loc3.id, driver_id=emp4.id, status="active")
-    await db.vehicles.insert_many([v1.dict(), v2.dict(), v3.dict(), v4.dict()])
 
-    maints = [
-        Maintenance(vehicle_id=v1.id, maintenance_type="تغيير زيت", description="زيت محرك 5W-30", cost=350, date=days_ago(30), status="completed", next_due_date=days_from_now(60)),
-        Maintenance(vehicle_id=v1.id, maintenance_type="فرامل", description="تغيير قماش الفرامل الأمامي", cost=800, date=days_ago(90), status="completed"),
-        Maintenance(vehicle_id=v2.id, maintenance_type="إطارات", description="4 إطارات جديدة", cost=2400, date=days_ago(60), status="completed", next_due_date=days_from_now(20)),
-        Maintenance(vehicle_id=v3.id, maintenance_type="صيانة شاملة", description="صيانة دورية 20 ألف كم", cost=1500, date=days_ago(5), status="pending"),
-        Maintenance(vehicle_id=v4.id, maintenance_type="تغيير زيت", description="زيت + فلاتر", cost=450, date=days_ago(15), status="completed", next_due_date=days_from_now(75)),
-        Maintenance(vehicle_id=v2.id, maintenance_type="بطارية", description="بطارية جديدة 100 أمبير", cost=650, date=days_ago(45), status="completed"),
-    ]
-    await db.maintenance.insert_many([m.dict() for m in maints])
+# ============ WHATSAPP MESSAGE HELPERS ============
+class ViolationNotifyReq(BaseModel):
+    violation_id: str
 
-    viols = [
-        Violation(vehicle_id=v1.id, employee_id=emp1.id, violation_type="تجاوز السرعة", amount=300, date=days_ago(10), location="طريق الملك فهد", status="unpaid"),
-        Violation(vehicle_id=v2.id, employee_id=emp2.id, violation_type="قطع إشارة حمراء", amount=500, date=days_ago(25), location="تقاطع العليا", status="paid"),
-        Violation(vehicle_id=v1.id, employee_id=emp1.id, violation_type="ركن خاطئ", amount=100, date=days_ago(45), location="شارع التحلية", status="unpaid"),
-        Violation(vehicle_id=v3.id, employee_id=emp3.id, violation_type="عدم ربط الحزام", amount=150, date=days_ago(70), location="طريق المدينة", status="paid"),
-        Violation(vehicle_id=v4.id, employee_id=emp4.id, violation_type="استخدام الجوال", amount=200, date=days_ago(90), location="طريق الدمام السريع", status="unpaid"),
-        Violation(vehicle_id=v2.id, employee_id=emp2.id, violation_type="تجاوز السرعة", amount=300, date=days_ago(120), location="طريق الرياض جدة", status="paid"),
-        Violation(vehicle_id=v1.id, employee_id=emp1.id, violation_type="تجاوز السرعة", amount=300, date=days_ago(150), location="طريق الجنوب", status="paid"),
-    ]
-    await db.violations.insert_many([v.dict() for v in viols])
+@api_router.get("/violations/{vid}/notify-info")
+async def violation_notify_info(vid: str, current_user: dict = Depends(get_current_user)):
+    v = await db.violations.find_one({"id": vid}, {"_id": 0})
+    if not v:
+        raise HTTPException(404, "المخالفة غير موجودة")
+    emp = None
+    if v.get("employee_id"):
+        emp = await db.employees.find_one({"id": v["employee_id"]}, {"_id": 0})
+    veh = await db.vehicles.find_one({"id": v["vehicle_id"]}, {"_id": 0}) if v.get("vehicle_id") else None
+    if not emp or not emp.get("phone"):
+        raise HTTPException(400, "لا يوجد رقم هاتف للموظف المرتبط بالمخالفة")
+    phone = normalize_phone(emp["phone"])
+    msg = (
+        f"السلام عليكم {emp['name']}\n"
+        f"تم تسجيل مخالفة مرورية بحقك:\n"
+        f"• النوع: {v['violation_type']}\n"
+        f"• المبلغ: {v['amount']} ر.س\n"
+        f"• التاريخ: {v['date']}\n"
+    )
+    if veh:
+        msg += f"• السيارة: {veh['plate_number']}\n"
+    if v.get("location"):
+        msg += f"• الموقع: {v['location']}\n"
+    msg += "\nسيتم خصم قيمة المخالفة من الراتب."
+    await db.violations.update_one({"id": vid}, {"$set": {"notified": True}})
+    return {"phone": phone, "message": msg}
 
-    leaves_ = [
-        Leave(employee_id=emp1.id, leave_type="اعتيادية", start_date=days_ago(-2), end_date=days_from_now(5), reason="إجازة سنوية", status="approved"),
-        Leave(employee_id=emp2.id, leave_type="مرضية", start_date=days_ago(15), end_date=days_ago(10), reason="نزلة برد", status="approved"),
-        Leave(employee_id=emp3.id, leave_type="اعتيادية", start_date=days_from_now(10), end_date=days_from_now(20), reason="سفر عائلي", status="pending"),
-    ]
-    await db.leaves.insert_many([lv.dict() for lv in leaves_])
 
-    # Fuel records
-    fuel_data = [
-        FuelRecord(vehicle_id=v1.id, employee_id=emp1.id, date=days_ago(5), liters=45.5, cost=105, odometer_before=45000, odometer_after=45400),
-        FuelRecord(vehicle_id=v1.id, employee_id=emp1.id, date=days_ago(20), liters=48.2, cost=110, odometer_before=44560, odometer_after=45000),
-        FuelRecord(vehicle_id=v2.id, employee_id=emp2.id, date=days_ago(7), liters=52.0, cost=120, odometer_before=32000, odometer_after=32380),
-        FuelRecord(vehicle_id=v4.id, employee_id=emp4.id, date=days_ago(3), liters=40.0, cost=92, odometer_before=15000, odometer_after=15350),
-    ]
-    await db.fuel_records.insert_many([f.dict() for f in fuel_data])
+class ApproveNotifyReq(BaseModel):
+    temp_password: str
+    phone: str
+    full_name: str
 
-    # Accidents
-    acc_data = [
-        Accident(vehicle_id=v3.id, employee_id=emp3.id, date=days_ago(35), description="اصطدام خفيف بالبمبر الخلفي", fault_percentage=25, cost=1200, status="closed", location="موقف مركز تجاري"),
-        Accident(vehicle_id=v2.id, employee_id=emp2.id, date=days_ago(80), description="خدش جانبي", fault_percentage=0, cost=450, status="closed", location="شارع فرعي"),
-    ]
-    await db.accidents.insert_many([a.dict() for a in acc_data])
+@api_router.post("/users/notify-message")
+async def notify_message(body: ApproveNotifyReq, current_user: dict = Depends(require_admin)):
+    """Formats a WhatsApp message with the temp password for admin to share."""
+    phone = normalize_phone(body.phone)
+    msg = (
+        f"مرحباً {body.full_name}\n"
+        f"تمت الموافقة على حسابك في تطبيق ميدان.\n\n"
+        f"• رقم الجوال (اسم المستخدم): {phone}\n"
+        f"• كلمة المرور المؤقتة: {body.temp_password}\n\n"
+        f"يرجى تسجيل الدخول وتغيير كلمة المرور فوراً."
+    )
+    return {"phone": phone, "message": msg}
 
-    # Assignments (history of who had which vehicle)
-    assigns = [
-        Assignment(vehicle_id=v1.id, employee_id=emp1.id, start_date=days_ago(180)),
-        Assignment(vehicle_id=v2.id, employee_id=emp2.id, start_date=days_ago(200)),
-        Assignment(vehicle_id=v3.id, employee_id=emp3.id, start_date=days_ago(150)),
-        Assignment(vehicle_id=v4.id, employee_id=emp4.id, start_date=days_ago(90)),
-    ]
-    await db.assignments.insert_many([a.dict() for a in assigns])
 
-    return {"seeded": True, "message": "تمت إضافة البيانات التجريبية"}
+# ============ STARTUP ============
+@app.on_event("startup")
+async def _on_startup():
+    if await db.locations.count_documents({}) == 0 and await db.users.count_documents({}) > 0:
+        await ensure_real_locations()
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    client.close()
 
 
 app.include_router(api_router)
@@ -743,7 +954,3 @@ app.add_middleware(
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()

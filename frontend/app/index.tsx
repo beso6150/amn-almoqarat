@@ -5,15 +5,20 @@ import { useAuth } from "@/src/auth";
 import { theme } from "@/src/theme";
 
 export default function Index() {
-  const { user, loading } = useAuth();
+  const { user, loading, adminExists } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
-    if (!loading) {
-      if (user) router.replace("/(tabs)/dashboard");
-      else router.replace("/(auth)/login");
+    if (loading) return;
+    if (user) {
+      if (user.must_change_password) router.replace("/(auth)/change-password");
+      else router.replace("/(tabs)/dashboard");
+    } else if (adminExists === false) {
+      router.replace("/(auth)/setup");
+    } else {
+      router.replace("/(auth)/login");
     }
-  }, [loading, user]);
+  }, [loading, user, adminExists]);
 
   return (
     <View style={styles.container} testID="splash-container">
