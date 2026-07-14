@@ -1,0 +1,151 @@
+{
+  "app_name": "Medan (ميدان)",
+  "personality": "1 iOS-Native Clean",
+  "personality_one_liner": "A stable, high-clarity operational command center that prioritizes legibility, precise Arabic RTL layout, and tactile data visualization over decorative chrome.",
+  "color": {
+    "surface": "#F7F7F5",
+    "onSurface": "#1A1A18",
+    "surfaceSecondary": "#FFFFFF",
+    "onSurfaceSecondary": "#333330",
+    "surfaceTertiary": "#EAEAE6",
+    "onSurfaceTertiary": "#4A4A46",
+    "surfaceInverse": "#1A1A18",
+    "onSurfaceInverse": "#F7F7F5",
+    "brand": "#3A4F2C",
+    "brandPrimary": "#3A4F2C",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#B85C38",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#D6DDD2",
+    "onBrandTertiary": "#25341C",
+    "success": "#2D6A4F",
+    "onSuccess": "#FFFFFF",
+    "warning": "#D4A373",
+    "onWarning": "#1A1A18",
+    "error": "#B85C38",
+    "onError": "#FFFFFF",
+    "info": "#4A4A46",
+    "onInfo": "#FFFFFF",
+    "border": "#D3D4CE",
+    "borderStrong": "#A3A599",
+    "divider": "#EAEAE6"
+  },
+  "typography": {
+    "displayFontFamily": "Tajawal, Plus Jakarta Sans",
+    "textFontFamily": "Tajawal, Plus Jakarta Sans",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous comfortable padding for touch targets on field. Padding defaults to lg (16).",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "1",
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": "true",
+    "do's": [
+      "Use for bottom tab bar to allow scrolling content to bleed behind",
+      "Use for sticky headers on long scrolling dashboard views"
+    ],
+    "dont's": [
+      "Do not use on data cards or charts",
+      "Do not use if it impacts Arabic text legibility"
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Dashboard (الرئيسية)",
+      "purpose": "High-level KPI overview showing fleet status, active violations, and maintenance alerts.",
+      "states": {
+        "loading": "Centered spinner with 'جاري تحميل البيانات...' text.",
+        "empty": "Illustration of a clean garage with 'لا توجد بيانات حالياً'.",
+        "error": "Error icon with 'حدث خطأ في الاتصال' and a retry CTA."
+      },
+      "layout": "4-KPI hero row at top (Total Vehicles, Active Maintenance, Pending Violations, Leaves). Below: Traffic-light status modules for immediate action, followed by a Bar Chart for Violations and Pie Chart for Maintenance Status. Single column scrolling."
+    },
+    {
+      "name": "Vehicles & Maintenance (السيارات والصيانة)",
+      "purpose": "List of vehicles mapped to locations, including maintenance history, price lists, and condition photos.",
+      "states": {
+        "loading": "Skeleton list of vehicle cards.",
+        "empty": "Vehicle image block + 'لم يتم إضافة سيارات بعد'. CTA to Add Vehicle.",
+        "error": "Error reading database + Retry CTA."
+      },
+      "layout": "Search/Filter sticky header (Glass). Cards displaying Vehicle ID, Status (Green/Amber/Red), and Location. Tap card -> opens detailed bottom sheet with maintenance cost history and photo grid."
+    },
+    {
+      "name": "Violations (المخالفات)",
+      "purpose": "Log and track traffic violations with attached camera proof photos and status.",
+      "states": {
+        "loading": "Skeleton list.",
+        "empty": "Traffic light empty state + 'سجل المخالفات نظيف'.",
+        "error": "Error reading data + Retry CTA."
+      },
+      "layout": "List of violation cards. Each card shows Date, Amount, Vehicle, and a thumbnail of the violation photo. Hero area includes a small line chart showing violation trends over the last 6 months."
+    },
+    {
+      "name": "Employees & Locations (الموظفين والمقرات)",
+      "purpose": "Directory of headquarters, assigned employees, and their active/upcoming leaves.",
+      "states": {
+        "loading": "Skeleton list.",
+        "empty": "Empty state illustration + 'لا يوجد موظفين'.",
+        "error": "Error reading data + Retry."
+      },
+      "layout": "Segmented control at top (Locations | Employees). Employees view shows list with 'Leave Status' badge (Active/Upcoming/Working). Locations view shows HQ addresses with vehicle counts."
+    }
+  ],
+  "images": {
+    "hero_fleet": {
+      "url": "https://images.unsplash.com/photo-1591768793355-74d04bb6608f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODF8MHwxfHNlYXJjaHwyfHxmbGVldCUyMGNvbW1lcmNpYWwlMjB0cnVja3MlMjByb2FkfGVufDB8fHx8MTc4NDAzNTU3MHww&ixlib=rb-4.1.0&q=85",
+      "alt": "Commercial trucks on road representing fleet"
+    },
+    "maintenance_empty": {
+      "url": "https://images.unsplash.com/photo-1615906655593-ad0386982a0f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzZ8MHwxfHNlYXJjaHwxfHxjYXIlMjBlbmdpbmUlMjBtYWludGVuYW5jZSUyMG1lY2hhbmljfGVufDB8fHx8MTc4NDAzNTU3MHww&ixlib=rb-4.1.0&q=85",
+      "alt": "Mechanic working on engine"
+    },
+    "violation_hero": {
+      "url": "https://images.unsplash.com/photo-1609234153285-78b715b9dfd7?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MTJ8MHwxfHNlYXJjaHwyfHx0cmFmZmljJTIwY2FtZXJhJTIwdmlvbGF0aW9ufGVufDB8fHx8MTc4NDAzNTU3MHww&ixlib=rb-4.1.0&q=85",
+      "alt": "Traffic cameras monitoring road"
+    }
+  },
+  "instructions_to_main_agent": [
+    "CRITICAL: The app MUST be designed with strict Right-To-Left (RTL) formatting. Use `I18nManager.forceRTL(true)` in setup and ensure all `flexDirection: 'row'` layouts logically flow from right to left.",
+    "Typography: Use `Tajawal` or `Cairo` for Arabic fonts. Load them via Expo fonts to ensure legibility.",
+    "Navigation: All 'forward' chevrons in list items must point left (CareLeft instead of CaretRight) due to RTL layout.",
+    "Palette: Adhere strictly to the Moss Green & Rust palette provided. Absolutely NO BLUES, INDIGOS, or PURPLES as per core anti-pattern rules. Use #3A4F2C as the primary action color.",
+    "Image Treatment: All images mapped in the app (e.g., violation photos, vehicle photos) MUST use a gradient scrim if text is overlaid, ensuring readability.",
+    "Components: Ensure touch targets are at least 44x44pt (critical for field workers).",
+    "Data Viz: Implement responsive charts (e.g., using `react-native-chart-kit` or `react-native-gifted-charts`) for the dashboard's violation trends and maintenance tracking."
+  ]
+}
