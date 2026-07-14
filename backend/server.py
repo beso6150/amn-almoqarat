@@ -923,7 +923,7 @@ async def notify_message(body: ApproveNotifyReq, current_user: dict = Depends(re
     phone = normalize_phone(body.phone)
     msg = (
         f"مرحباً {body.full_name}\n"
-        f"تمت الموافقة على حسابك في تطبيق ميدان.\n\n"
+        f"تمت الموافقة على حسابك في تطبيق إدارة أمن مقرات الهيئة.\n\n"
         f"• رقم الجوال (اسم المستخدم): {phone}\n"
         f"• كلمة المرور المؤقتة: {body.temp_password}\n\n"
         f"يرجى تسجيل الدخول وتغيير كلمة المرور فوراً."

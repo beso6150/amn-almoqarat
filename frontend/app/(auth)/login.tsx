@@ -44,8 +44,8 @@ export default function LoginScreen() {
             <View style={styles.logoCircle}>
               <Ionicons name="shield-checkmark" size={40} color={theme.colors.onBrandPrimary} />
             </View>
-            <Text style={styles.appName}>ميدان</Text>
-            <Text style={styles.tagline}>إدارة العمل الميداني</Text>
+            <Text style={styles.appName}>إدارة أمن مقرات الهيئة</Text>
+            <Text style={styles.tagline}>نظام العمل الميداني</Text>
           </View>
         </SafeAreaView>
       </LinearGradient>

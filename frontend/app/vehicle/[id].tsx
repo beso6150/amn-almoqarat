@@ -75,7 +75,7 @@ export default function VehicleDetail() {
       ${rows(data.accidents, [["date"], ["description"], ["fault_percentage"], ["cost"], ["status"]])}
     </table>
 
-    <p style="margin-top:32px;text-align:center;color:#999;font-size:11px">تقرير تم إنشاؤه من تطبيق ميدان - ${new Date().toLocaleString("ar-SA")}</p>
+    <p style="margin-top:32px;text-align:center;color:#999;font-size:11px">تقرير تم إنشاؤه من تطبيق إدارة أمن مقرات الهيئة - ${new Date().toLocaleString("ar-SA")}</p>
     </body></html>`;
     try {
       const { uri } = await Print.printToFileAsync({ html });

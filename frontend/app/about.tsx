@@ -54,7 +54,7 @@ export default function AboutScreen() {
             <Ionicons name="call" size={20} color="#fff" />
             <Text style={styles.actionText}>اتصال</Text>
           </Pressable>
-          <Pressable testID="dev-whatsapp" onPress={() => openWhatsApp(DEV_PHONE, "السلام عليكم، لدي استفسار بخصوص تطبيق ميدان")} style={[styles.actionBtn, { backgroundColor: "#25D366" }]}>
+          <Pressable testID="dev-whatsapp" onPress={() => openWhatsApp(DEV_PHONE, "السلام عليكم، لدي استفسار بخصوص تطبيق إدارة أمن مقرات الهيئة")} style={[styles.actionBtn, { backgroundColor: "#25D366" }]}>
             <Ionicons name="logo-whatsapp" size={20} color="#fff" />
             <Text style={styles.actionText}>واتساب</Text>
           </Pressable>

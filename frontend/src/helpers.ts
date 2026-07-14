@@ -134,5 +134,5 @@ export const arabicPdfShell = (title: string, bodyHtml: string) => `
 <h1>${title}</h1>
 ${bodyHtml}
 <p style="margin-top:32px;text-align:center;color:#999;font-size:11px">
-تقرير تم إنشاؤه من تطبيق ميدان — ${new Date().toLocaleDateString("ar-SA")}
+تقرير تم إنشاؤه من تطبيق إدارة أمن مقرات الهيئة — ${new Date().toLocaleDateString("ar-SA")}
 </p></body></html>`;
