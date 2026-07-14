@@ -31,7 +31,13 @@ export default function RegisterScreen() {
     }
     setLoading(true);
     try {
-      await register(email.trim().toLowerCase(), password, name);
+      const res = await register(email.trim().toLowerCase(), password, name);
+      if (res.pending) {
+        // Show pending screen
+        setLoading(false);
+        router.replace({ pathname: "/(auth)/pending", params: { message: res.message || "بانتظار موافقة المدير" } });
+        return;
+      }
       router.replace("/(tabs)/dashboard");
     } catch (e: any) {
       setError(e.message || "فشل إنشاء الحساب");

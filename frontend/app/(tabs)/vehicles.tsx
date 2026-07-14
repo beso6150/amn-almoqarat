@@ -1,11 +1,13 @@
-import React, { useState, useCallback, useEffect } from "react";
-import { View, Text, StyleSheet, FlatList, Pressable, TextInput, ActivityIndicator, Alert } from "react-native";
+import React, { useState, useCallback } from "react";
+import { View, Text, StyleSheet, FlatList, Pressable, TextInput, ActivityIndicator, Alert, Image as ExpoImage } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { api } from "@/src/api";
 import { theme } from "@/src/theme";
 import { FormSheet, Field, inputStyle } from "@/src/FormSheet";
+import { useAuth } from "@/src/auth";
+import { chooseImage } from "@/src/helpers";
 
 const STATUS_MAP: any = {
   active: { label: "نشطة", color: theme.colors.success },
@@ -14,6 +16,8 @@ const STATUS_MAP: any = {
 };
 
 export default function VehiclesScreen() {
+  const { isAdmin } = useAuth();
+  const router = useRouter();
   const [vehicles, setVehicles] = useState<any[]>([]);
   const [locations, setLocations] = useState<any[]>([]);
   const [employees, setEmployees] = useState<any[]>([]);
@@ -26,7 +30,7 @@ export default function VehiclesScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [v, l, e] = await Promise.all([api.listVehicles(), api.listLocations(), api.listEmployees()]);
+      const [v, l, e] = await Promise.all([api.vehicles.list(), api.locations.list(), api.employees.list()]);
       setVehicles(v); setLocations(l); setEmployees(e);
     } catch (err) {}
     setLoading(false);
@@ -35,11 +39,13 @@ export default function VehiclesScreen() {
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const openAdd = () => {
+    if (!isAdmin) return;
     setEditing(null);
-    setForm({ plate_number: "", model: "", year: "", color: "", location_id: null, driver_id: null, status: "active" });
+    setForm({ plate_number: "", model: "", year: "", color: "", location_id: null, driver_id: null, status: "active", photo: "" });
     setSheetOpen(true);
   };
   const openEdit = (v: any) => {
+    if (!isAdmin) return;
     setEditing(v);
     setForm({ ...v, year: v.year ? String(v.year) : "" });
     setSheetOpen(true);
@@ -52,8 +58,8 @@ export default function VehiclesScreen() {
     }
     const body = { ...form, year: form.year ? parseInt(form.year) : null };
     try {
-      if (editing) await api.updateVehicle(editing.id, body);
-      else await api.createVehicle(body);
+      if (editing) await api.vehicles.update(editing.id, body);
+      else await api.vehicles.create(body);
       setSheetOpen(false);
       load();
     } catch (e: any) { Alert.alert("خطأ", e.message); }
@@ -62,7 +68,7 @@ export default function VehiclesScreen() {
   const remove = (v: any) => {
     Alert.alert("حذف السيارة", `هل تريد حذف ${v.plate_number}؟`, [
       { text: "إلغاء", style: "cancel" },
-      { text: "حذف", style: "destructive", onPress: async () => { await api.deleteVehicle(v.id); load(); } },
+      { text: "حذف", style: "destructive", onPress: async () => { await api.vehicles.delete(v.id); load(); } },
     ]);
   };
 
@@ -83,9 +89,11 @@ export default function VehiclesScreen() {
     <SafeAreaView style={styles.root} edges={["top"]}>
       <View style={styles.header}>
         <Text style={styles.title}>السيارات</Text>
-        <Pressable testID="add-vehicle-btn" onPress={openAdd} style={styles.addBtn}>
-          <Ionicons name="add" size={22} color="#fff" />
-        </Pressable>
+        {isAdmin && (
+          <Pressable testID="add-vehicle-btn" onPress={openAdd} style={styles.addBtn}>
+            <Ionicons name="add" size={22} color="#fff" />
+          </Pressable>
+        )}
       </View>
 
       <View style={styles.searchRow}>
@@ -139,7 +147,14 @@ export default function VehiclesScreen() {
             const drv = employees.find(e => e.id === item.driver_id);
             const st = STATUS_MAP[item.status] || STATUS_MAP.active;
             return (
-              <Pressable testID={`vehicle-card-${item.id}`} style={styles.card} onLongPress={() => remove(item)} onPress={() => openEdit(item)}>
+              <Pressable testID={`vehicle-card-${item.id}`} style={styles.card} onLongPress={() => {
+                if (!isAdmin) return;
+                Alert.alert("خيارات", item.plate_number, [
+                  { text: "تعديل", onPress: () => openEdit(item) },
+                  { text: "حذف", style: "destructive", onPress: () => remove(item) },
+                  { text: "إلغاء", style: "cancel" },
+                ]);
+              }} onPress={() => router.push({ pathname: "/vehicle/[id]", params: { id: item.id } })}>
                 <View style={styles.cardTop}>
                   <View style={styles.iconBox}><Ionicons name="car-sport" size={22} color={theme.colors.brandPrimary} /></View>
                   <View style={{ flex: 1 }}>
@@ -190,6 +205,23 @@ export default function VehiclesScreen() {
         </Field>
         <Field label="السائق">
           <PickerRow value={form.driver_id} onChange={(v) => setForm({ ...form, driver_id: v })} options={[{ value: null, label: "غير محدد" }, ...employees.map(e => ({ value: e.id, label: e.name }))]} />
+        </Field>
+        <Field label="صورة السيارة">
+          {form.photo ? (
+            <View>
+              <Pressable onPress={() => chooseImage((d) => setForm({ ...form, photo: d }))}>
+                <ExpoImage source={{ uri: form.photo }} style={{ width: "100%", height: 160, borderRadius: theme.radius.md }} />
+              </Pressable>
+              <Pressable onPress={() => setForm({ ...form, photo: "" })} style={{ marginTop: 6, alignSelf: "flex-end" }}>
+                <Text style={{ color: theme.colors.error, fontSize: 12 }}>حذف الصورة</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable onPress={() => chooseImage((d) => setForm({ ...form, photo: d }))} style={{ height: 100, borderWidth: 1, borderStyle: "dashed", borderColor: theme.colors.border, borderRadius: theme.radius.md, alignItems: "center", justifyContent: "center", gap: 6 }}>
+              <Ionicons name="camera" size={24} color={theme.colors.onSurfaceTertiary} />
+              <Text style={{ color: theme.colors.onSurfaceTertiary, fontSize: 13 }}>إضافة صورة</Text>
+            </Pressable>
+          )}
         </Field>
       </FormSheet>
     </SafeAreaView>

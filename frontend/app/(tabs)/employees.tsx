@@ -1,16 +1,20 @@
 import React, { useState, useCallback } from "react";
-import { View, Text, StyleSheet, FlatList, Pressable, TextInput, ActivityIndicator, Alert } from "react-native";
+import { View, Text, StyleSheet, FlatList, Pressable, TextInput, ActivityIndicator, Alert, Image as ExpoImage } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { api } from "@/src/api";
 import { theme } from "@/src/theme";
 import { FormSheet, Field, inputStyle } from "@/src/FormSheet";
 import { PickerRow } from "./vehicles";
+import { openWhatsApp, openDialer, chooseImage } from "@/src/helpers";
+import { useAuth } from "@/src/auth";
 
-type Tab = "locations" | "employees" | "leaves" | "maintenance";
+type Tab = "locations" | "employees" | "leaves" | "maintenance" | "fuel" | "accidents";
 
 export default function EmployeesScreen() {
+  const { isAdmin } = useAuth();
+  const router = useRouter();
   const [tab, setTab] = useState<Tab>("employees");
   const [loading, setLoading] = useState(true);
   const [locations, setLocations] = useState<any[]>([]);
@@ -18,16 +22,20 @@ export default function EmployeesScreen() {
   const [leaves, setLeaves] = useState<any[]>([]);
   const [maintenance, setMaintenance] = useState<any[]>([]);
   const [vehicles, setVehicles] = useState<any[]>([]);
+  const [fuel, setFuel] = useState<any[]>([]);
+  const [accidents, setAccidents] = useState<any[]>([]);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [form, setForm] = useState<any>({});
 
   const load = useCallback(async () => {
     try {
-      const [l, e, lv, m, v] = await Promise.all([
-        api.listLocations(), api.listEmployees(), api.listLeaves(), api.listMaintenance(), api.listVehicles(),
+      const [l, e, lv, m, v, f, a] = await Promise.all([
+        api.locations.list(), api.employees.list(), api.leaves.list(), api.maintenance.list(), api.vehicles.list(),
+        api.fuel.list(), api.accidents.list(),
       ]);
       setLocations(l); setEmployees(e); setLeaves(lv); setMaintenance(m); setVehicles(v);
+      setFuel(f); setAccidents(a);
     } catch {}
     setLoading(false);
   }, []);
@@ -38,18 +46,24 @@ export default function EmployeesScreen() {
   const in30 = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
 
   const openAdd = () => {
+    if (!isAdmin) return;
     setEditing(null);
     if (tab === "locations") setForm({ name: "", address: "", phone: "", manager: "" });
-    else if (tab === "employees") setForm({ name: "", national_id: "", phone: "", position: "", location_id: null, salary: "" });
+    else if (tab === "employees") setForm({ name: "", employee_number: "", national_id: "", phone: "", position: "", location_id: null });
     else if (tab === "leaves") setForm({ employee_id: employees[0]?.id, leave_type: "اعتيادية", start_date: today, end_date: in30, reason: "", status: "approved" });
     else if (tab === "maintenance") setForm({ vehicle_id: vehicles[0]?.id, maintenance_type: "", description: "", cost: "", date: today, status: "completed", next_due_date: "" });
+    else if (tab === "fuel") setForm({ vehicle_id: vehicles[0]?.id, employee_id: null, date: today, liters: "", cost: "", odometer_before: "", odometer_after: "", notes: "" });
+    else if (tab === "accidents") setForm({ vehicle_id: vehicles[0]?.id, employee_id: null, date: today, description: "", fault_percentage: "0", cost: "", status: "open", location: "", notes: "" });
     setSheetOpen(true);
   };
 
   const openEdit = (it: any) => {
+    if (!isAdmin) return;
     setEditing(it);
-    if (tab === "employees") setForm({ ...it, salary: it.salary ? String(it.salary) : "" });
+    if (tab === "employees") setForm({ ...it });
     else if (tab === "maintenance") setForm({ ...it, cost: String(it.cost || 0) });
+    else if (tab === "fuel") setForm({ ...it, liters: String(it.liters || 0), cost: String(it.cost || 0), odometer_before: String(it.odometer_before || 0), odometer_after: String(it.odometer_after || 0) });
+    else if (tab === "accidents") setForm({ ...it, fault_percentage: String(it.fault_percentage || 0), cost: String(it.cost || 0) });
     else setForm({ ...it });
     setSheetOpen(true);
   };
@@ -58,18 +72,25 @@ export default function EmployeesScreen() {
     try {
       if (tab === "locations") {
         if (!form.name || !form.address) return Alert.alert("خطأ", "الاسم والعنوان مطلوبان");
-        if (editing) await api.updateLocation(editing.id, form); else await api.createLocation(form);
+        if (editing) await api.locations.update(editing.id, form); else await api.locations.create(form);
       } else if (tab === "employees") {
         if (!form.name) return Alert.alert("خطأ", "الاسم مطلوب");
-        const body = { ...form, salary: parseFloat(form.salary) || 0 };
-        if (editing) await api.updateEmployee(editing.id, body); else await api.createEmployee(body);
+        if (editing) await api.employees.update(editing.id, form); else await api.employees.create(form);
       } else if (tab === "leaves") {
         if (!form.employee_id) return Alert.alert("خطأ", "يرجى اختيار موظف");
-        if (editing) await api.updateLeave(editing.id, form); else await api.createLeave(form);
+        if (editing) await api.leaves.update(editing.id, form); else await api.leaves.create(form);
       } else if (tab === "maintenance") {
         if (!form.vehicle_id || !form.maintenance_type) return Alert.alert("خطأ", "السيارة ونوع الصيانة مطلوبان");
         const body = { ...form, cost: parseFloat(form.cost) || 0, next_due_date: form.next_due_date || null };
-        if (editing) await api.updateMaintenance(editing.id, body); else await api.createMaintenance(body);
+        if (editing) await api.maintenance.update(editing.id, body); else await api.maintenance.create(body);
+      } else if (tab === "fuel") {
+        if (!form.vehicle_id) return Alert.alert("خطأ", "يرجى اختيار سيارة");
+        const body = { ...form, liters: parseFloat(form.liters) || 0, cost: parseFloat(form.cost) || 0, odometer_before: parseFloat(form.odometer_before) || 0, odometer_after: parseFloat(form.odometer_after) || 0 };
+        if (editing) await api.fuel.update(editing.id, body); else await api.fuel.create(body);
+      } else if (tab === "accidents") {
+        if (!form.vehicle_id || !form.description) return Alert.alert("خطأ", "السيارة والوصف مطلوبان");
+        const body = { ...form, fault_percentage: parseFloat(form.fault_percentage) || 0, cost: parseFloat(form.cost) || 0, photos: form.photos || [] };
+        if (editing) await api.accidents.update(editing.id, body); else await api.accidents.create(body);
       }
       setSheetOpen(false);
       load();
@@ -77,14 +98,19 @@ export default function EmployeesScreen() {
   };
 
   const remove = (it: any) => {
+    if (!isAdmin) return;
     Alert.alert("تأكيد الحذف", "هل أنت متأكد؟", [
       { text: "إلغاء", style: "cancel" },
       { text: "حذف", style: "destructive", onPress: async () => {
-        if (tab === "locations") await api.deleteLocation(it.id);
-        else if (tab === "employees") await api.deleteEmployee(it.id);
-        else if (tab === "leaves") await api.deleteLeave(it.id);
-        else if (tab === "maintenance") await api.deleteMaintenance(it.id);
-        load();
+        try {
+          if (tab === "locations") await api.locations.delete(it.id);
+          else if (tab === "employees") await api.employees.delete(it.id);
+          else if (tab === "leaves") await api.leaves.delete(it.id);
+          else if (tab === "maintenance") await api.maintenance.delete(it.id);
+          else if (tab === "fuel") await api.fuel.delete(it.id);
+          else if (tab === "accidents") await api.accidents.delete(it.id);
+          load();
+        } catch (e: any) { Alert.alert("خطأ", e.message); }
       } },
     ]);
   };
@@ -94,6 +120,8 @@ export default function EmployeesScreen() {
     { key: "locations", label: "المقرات", icon: "business" },
     { key: "leaves", label: "الإجازات", icon: "airplane" },
     { key: "maintenance", label: "الصيانة", icon: "build" },
+    { key: "fuel", label: "الوقود", icon: "flame" },
+    { key: "accidents", label: "الحوادث", icon: "alert-circle" },
   ];
 
   const renderItem = ({ item }: any) => {
@@ -121,19 +149,34 @@ export default function EmployeesScreen() {
       const loc = locations.find(l => l.id === item.location_id);
       const activeLeave = leaves.find(lv => lv.employee_id === item.id && lv.start_date <= today && lv.end_date >= today && lv.status === "approved");
       return (
-        <Pressable style={styles.card} onPress={() => openEdit(item)} onLongPress={() => remove(item)} testID={`employee-card-${item.id}`}>
-          <View style={styles.iconBox}><Ionicons name="person" size={22} color={theme.colors.brandPrimary} /></View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.name}>{item.name}</Text>
-            {item.position && <Text style={styles.subtle}>{item.position}</Text>}
-            {loc && <Text style={styles.subtle}>{loc.name}</Text>}
-          </View>
-          <View style={[styles.badge, { backgroundColor: activeLeave ? theme.colors.warning + "20" : theme.colors.success + "20" }]}>
-            <Text style={[styles.badgeText, { color: activeLeave ? theme.colors.warning : theme.colors.success }]}>
-              {activeLeave ? "في إجازة" : "على رأس العمل"}
-            </Text>
-          </View>
-        </Pressable>
+        <View style={styles.cardCol} testID={`employee-card-${item.id}`}>
+          <Pressable style={{ flexDirection: "row-reverse", flex: 1, alignItems: "flex-start", gap: theme.spacing.md }} onPress={() => openEdit(item)} onLongPress={() => remove(item)}>
+            <View style={styles.iconBox}><Ionicons name="person" size={22} color={theme.colors.brandPrimary} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.name}>{item.name}</Text>
+              {item.employee_number ? <Text style={styles.subtle}>الرقم الوظيفي: {item.employee_number}</Text> : null}
+              {item.position ? <Text style={styles.subtle}>{item.position}</Text> : null}
+              {loc && <Text style={styles.subtle}>{loc.name}</Text>}
+            </View>
+            <View style={[styles.badge, { backgroundColor: activeLeave ? theme.colors.warning + "20" : theme.colors.success + "20" }]}>
+              <Text style={[styles.badgeText, { color: activeLeave ? theme.colors.warning : theme.colors.success }]}>
+                {activeLeave ? "في إجازة" : "على رأس العمل"}
+              </Text>
+            </View>
+          </Pressable>
+          {item.phone ? (
+            <View style={styles.contactRow}>
+              <Pressable testID={`call-${item.id}`} onPress={() => openDialer(item.phone)} style={[styles.contactBtn, { backgroundColor: theme.colors.brandPrimary }]}>
+                <Ionicons name="call" size={16} color="#fff" />
+                <Text style={styles.contactText}>اتصال</Text>
+              </Pressable>
+              <Pressable testID={`whatsapp-${item.id}`} onPress={() => openWhatsApp(item.phone)} style={[styles.contactBtn, { backgroundColor: "#25D366" }]}>
+                <Ionicons name="logo-whatsapp" size={16} color="#fff" />
+                <Text style={styles.contactText}>واتساب</Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
       );
     }
     if (tab === "leaves") {
@@ -183,19 +226,74 @@ export default function EmployeesScreen() {
         </Pressable>
       );
     }
+    if (tab === "fuel") {
+      const veh = vehicles.find(v => v.id === item.vehicle_id);
+      const emp = employees.find(e => e.id === item.employee_id);
+      const dist = (item.odometer_after && item.odometer_before) ? (item.odometer_after - item.odometer_before) : 0;
+      return (
+        <Pressable style={styles.card} onPress={() => openEdit(item)} onLongPress={() => remove(item)} testID={`fuel-card-${item.id}`}>
+          <View style={[styles.iconBox, { backgroundColor: theme.colors.brandSecondary + "20" }]}>
+            <Ionicons name="flame" size={22} color={theme.colors.brandSecondary} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.name}>{item.liters} لتر - {item.cost.toLocaleString()} ر.س</Text>
+            <Text style={styles.subtle}>{veh?.plate_number || "غير معروف"} {emp && `- ${emp.name}`}</Text>
+            <Text style={styles.subtle}>{item.date}{dist > 0 && ` • ${dist} كم`}</Text>
+          </View>
+          {(item.photo_before || item.photo_after) && (
+            <View style={{ alignItems: "center" }}>
+              <Ionicons name="camera" size={16} color={theme.colors.brandPrimary} />
+              <Text style={{ fontSize: 10, color: theme.colors.brandPrimary }}>صور</Text>
+            </View>
+          )}
+        </Pressable>
+      );
+    }
+    if (tab === "accidents") {
+      const veh = vehicles.find(v => v.id === item.vehicle_id);
+      const emp = employees.find(e => e.id === item.employee_id);
+      const closed = item.status === "closed";
+      return (
+        <Pressable style={styles.card} onPress={() => openEdit(item)} onLongPress={() => remove(item)} testID={`accident-card-${item.id}`}>
+          <View style={[styles.iconBox, { backgroundColor: theme.colors.error + "20" }]}>
+            <Ionicons name="alert-circle" size={22} color={theme.colors.error} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.name}>{item.description}</Text>
+            <Text style={styles.subtle}>{veh?.plate_number || "غير معروف"} {emp && `- ${emp.name}`}</Text>
+            <Text style={styles.subtle}>{item.date} • نسبة الخطأ: {item.fault_percentage}%</Text>
+          </View>
+          <View style={{ alignItems: "flex-start" }}>
+            <Text style={styles.cost}>{item.cost.toLocaleString()} ر.س</Text>
+            <View style={[styles.badge, { backgroundColor: closed ? theme.colors.success + "20" : theme.colors.warning + "20", marginTop: 4 }]}>
+              <Text style={[styles.badgeText, { color: closed ? theme.colors.success : theme.colors.warning }]}>{closed ? "مغلقة" : "مفتوحة"}</Text>
+            </View>
+          </View>
+        </Pressable>
+      );
+    }
     return null;
   };
 
-  const data = tab === "locations" ? locations : tab === "employees" ? employees : tab === "leaves" ? leaves : maintenance;
-  const addLabel = tab === "locations" ? "مقر" : tab === "employees" ? "موظف" : tab === "leaves" ? "إجازة" : "صيانة";
+  const data = tab === "locations" ? locations : tab === "employees" ? employees : tab === "leaves" ? leaves : tab === "maintenance" ? maintenance : tab === "fuel" ? fuel : accidents;
+  const addLabel = tab === "locations" ? "مقر" : tab === "employees" ? "موظف" : tab === "leaves" ? "إجازة" : tab === "maintenance" ? "صيانة" : tab === "fuel" ? "تعبئة وقود" : "حادث";
 
   return (
     <SafeAreaView style={styles.root} edges={["top"]}>
       <View style={styles.header}>
         <Text style={styles.title}>الإدارة</Text>
-        <Pressable testID="add-item-btn" onPress={openAdd} style={styles.addBtn}>
-          <Ionicons name="add" size={22} color="#fff" />
-        </Pressable>
+        <View style={{ flexDirection: "row-reverse", gap: 8 }}>
+          {isAdmin && (
+            <Pressable testID="users-mgmt-btn" onPress={() => router.push("/users")} style={[styles.addBtn, { backgroundColor: theme.colors.brandSecondary }]}>
+              <Ionicons name="people-circle" size={22} color="#fff" />
+            </Pressable>
+          )}
+          {isAdmin && (
+            <Pressable testID="add-item-btn" onPress={openAdd} style={styles.addBtn}>
+              <Ionicons name="add" size={22} color="#fff" />
+            </Pressable>
+          )}
+        </View>
       </View>
 
       <View style={styles.chipRowWrap}>
@@ -224,9 +322,11 @@ export default function EmployeesScreen() {
             <View style={styles.empty}>
               <Ionicons name="folder-open-outline" size={48} color={theme.colors.onSurfaceTertiary} />
               <Text style={styles.emptyText}>لا توجد بيانات</Text>
-              <Pressable testID="empty-add-btn" onPress={openAdd} style={styles.addBigBtn}>
-                <Text style={{ color: "#fff", fontWeight: "700" }}>+ إضافة {addLabel}</Text>
-              </Pressable>
+              {isAdmin && (
+                <Pressable testID="empty-add-btn" onPress={openAdd} style={styles.addBigBtn}>
+                  <Text style={{ color: "#fff", fontWeight: "700" }}>+ إضافة {addLabel}</Text>
+                </Pressable>
+              )}
             </View>
           }
         />
@@ -244,10 +344,12 @@ export default function EmployeesScreen() {
         {tab === "employees" && (
           <>
             <Field label="الاسم *"><TextInput style={inputStyle} value={form.name} onChangeText={(t) => setForm({ ...form, name: t })} /></Field>
+            <Field label="الرقم الوظيفي"><TextInput style={inputStyle} value={form.employee_number} onChangeText={(t) => setForm({ ...form, employee_number: t })} placeholder="مثال: EMP-001" /></Field>
             <Field label="رقم الهوية"><TextInput style={inputStyle} value={form.national_id} onChangeText={(t) => setForm({ ...form, national_id: t })} keyboardType="numeric" /></Field>
-            <Field label="الهاتف"><TextInput style={inputStyle} value={form.phone} onChangeText={(t) => setForm({ ...form, phone: t })} keyboardType="phone-pad" /></Field>
-            <Field label="الوظيفة"><TextInput style={inputStyle} value={form.position} onChangeText={(t) => setForm({ ...form, position: t })} /></Field>
-            <Field label="الراتب"><TextInput style={inputStyle} value={form.salary} onChangeText={(t) => setForm({ ...form, salary: t })} keyboardType="numeric" /></Field>
+            <Field label="الهاتف"><TextInput style={inputStyle} value={form.phone} onChangeText={(t) => setForm({ ...form, phone: t })} keyboardType="phone-pad" placeholder="مثال: 966501111111" /></Field>
+            <Field label="الوظيفة">
+              <PickerRow value={form.position} onChange={(v: any) => setForm({ ...form, position: v })} options={[{ value: "رجل أمن", label: "رجل أمن" }, { value: "مشرف أمن", label: "مشرف أمن" }, { value: "مدير عمليات", label: "مدير عمليات" }, { value: "سائق", label: "سائق" }, { value: "فني صيانة", label: "فني صيانة" }]} />
+            </Field>
             <Field label="المقر">
               <PickerRow value={form.location_id} onChange={(v: any) => setForm({ ...form, location_id: v })} options={[{ value: null, label: "غير محدد" }, ...locations.map(l => ({ value: l.id, label: l.name }))]} />
             </Field>
@@ -284,10 +386,93 @@ export default function EmployeesScreen() {
             <Field label="تاريخ الصيانة القادمة"><TextInput style={inputStyle} value={form.next_due_date || ""} onChangeText={(t) => setForm({ ...form, next_due_date: t })} placeholder="YYYY-MM-DD (اختياري)" /></Field>
           </>
         )}
+        {tab === "fuel" && (
+          <>
+            <Field label="السيارة *">
+              <PickerRow value={form.vehicle_id} onChange={(v: any) => setForm({ ...form, vehicle_id: v })} options={vehicles.map(v => ({ value: v.id, label: v.plate_number }))} />
+            </Field>
+            <Field label="التاريخ"><TextInput style={inputStyle} value={form.date} onChangeText={(t) => setForm({ ...form, date: t })} placeholder="YYYY-MM-DD" /></Field>
+            <Field label="عدد اللترات"><TextInput style={inputStyle} value={form.liters} onChangeText={(t) => setForm({ ...form, liters: t })} keyboardType="numeric" /></Field>
+            <Field label="التكلفة (ر.س)"><TextInput style={inputStyle} value={form.cost} onChangeText={(t) => setForm({ ...form, cost: t })} keyboardType="numeric" /></Field>
+            <Field label="قراءة العداد قبل"><TextInput style={inputStyle} value={form.odometer_before} onChangeText={(t) => setForm({ ...form, odometer_before: t })} keyboardType="numeric" placeholder="كم" /></Field>
+            <Field label="قراءة العداد بعد"><TextInput style={inputStyle} value={form.odometer_after} onChangeText={(t) => setForm({ ...form, odometer_after: t })} keyboardType="numeric" placeholder="كم" /></Field>
+            <Field label="السائق">
+              <PickerRow value={form.employee_id} onChange={(v: any) => setForm({ ...form, employee_id: v })} options={[{ value: null, label: "غير محدد" }, ...employees.map(e => ({ value: e.id, label: e.name }))]} />
+            </Field>
+            <Field label="صورة العداد قبل التعبئة">
+              <PhotoField uri={form.photo_before} onPick={() => chooseImage((d) => setForm({ ...form, photo_before: d }))} onClear={() => setForm({ ...form, photo_before: "" })} />
+            </Field>
+            <Field label="صورة العداد بعد التعبئة">
+              <PhotoField uri={form.photo_after} onPick={() => chooseImage((d) => setForm({ ...form, photo_after: d }))} onClear={() => setForm({ ...form, photo_after: "" })} />
+            </Field>
+            <Field label="ملاحظات"><TextInput style={[inputStyle, { minHeight: 60 }]} value={form.notes} onChangeText={(t) => setForm({ ...form, notes: t })} multiline /></Field>
+          </>
+        )}
+        {tab === "accidents" && (
+          <>
+            <Field label="السيارة *">
+              <PickerRow value={form.vehicle_id} onChange={(v: any) => setForm({ ...form, vehicle_id: v })} options={vehicles.map(v => ({ value: v.id, label: v.plate_number }))} />
+            </Field>
+            <Field label="الوصف *"><TextInput style={[inputStyle, { minHeight: 60 }]} value={form.description} onChangeText={(t) => setForm({ ...form, description: t })} multiline placeholder="وصف الحادث" /></Field>
+            <Field label="التاريخ"><TextInput style={inputStyle} value={form.date} onChangeText={(t) => setForm({ ...form, date: t })} placeholder="YYYY-MM-DD" /></Field>
+            <Field label="الموقع"><TextInput style={inputStyle} value={form.location} onChangeText={(t) => setForm({ ...form, location: t })} /></Field>
+            <Field label="نسبة الخطأ (%)"><TextInput style={inputStyle} value={form.fault_percentage} onChangeText={(t) => setForm({ ...form, fault_percentage: t })} keyboardType="numeric" placeholder="0-100" /></Field>
+            <Field label="التكلفة (ر.س)"><TextInput style={inputStyle} value={form.cost} onChangeText={(t) => setForm({ ...form, cost: t })} keyboardType="numeric" /></Field>
+            <Field label="السائق">
+              <PickerRow value={form.employee_id} onChange={(v: any) => setForm({ ...form, employee_id: v })} options={[{ value: null, label: "غير محدد" }, ...employees.map(e => ({ value: e.id, label: e.name }))]} />
+            </Field>
+            <Field label="الحالة">
+              <PickerRow value={form.status} onChange={(v: any) => setForm({ ...form, status: v })} options={[{ value: "open", label: "مفتوحة" }, { value: "closed", label: "مغلقة" }]} />
+            </Field>
+            <Field label="صور الحادث">
+              <PhotoListField photos={form.photos || []} onAdd={() => chooseImage((d) => setForm({ ...form, photos: [...(form.photos || []), d] }))} onRemove={(idx: number) => setForm({ ...form, photos: (form.photos || []).filter((_: any, i: number) => i !== idx) })} />
+            </Field>
+            <Field label="ملاحظات"><TextInput style={[inputStyle, { minHeight: 60 }]} value={form.notes} onChangeText={(t) => setForm({ ...form, notes: t })} multiline /></Field>
+          </>
+        )}
       </FormSheet>
     </SafeAreaView>
   );
 }
+
+const PhotoField = ({ uri, onPick, onClear }: any) => {
+  if (uri) {
+    return (
+      <View>
+        <Pressable onPress={onPick} style={{ borderRadius: theme.radius.md, overflow: "hidden" }}>
+          <View style={{ height: 140, backgroundColor: theme.colors.surfaceTertiary, alignItems: "center", justifyContent: "center" }}>
+            <ExpoImage source={{ uri }} style={{ width: "100%", height: 140 }} />
+          </View>
+        </Pressable>
+        <Pressable onPress={onClear} style={{ marginTop: 4, alignSelf: "flex-end" }}>
+          <Text style={{ color: theme.colors.error, fontSize: 12 }}>حذف الصورة</Text>
+        </Pressable>
+      </View>
+    );
+  }
+  return (
+    <Pressable onPress={onPick} style={{ height: 100, borderWidth: 1, borderStyle: "dashed", borderColor: theme.colors.border, borderRadius: theme.radius.md, alignItems: "center", justifyContent: "center", gap: 6 }}>
+      <Ionicons name="camera" size={24} color={theme.colors.onSurfaceTertiary} />
+      <Text style={{ color: theme.colors.onSurfaceTertiary, fontSize: 13 }}>إضافة صورة</Text>
+    </Pressable>
+  );
+};
+
+const PhotoListField = ({ photos, onAdd, onRemove }: any) => (
+  <View style={{ flexDirection: "row-reverse", flexWrap: "wrap", gap: 8 }}>
+    {photos.map((p: string, i: number) => (
+      <View key={i} style={{ position: "relative" }}>
+        <ExpoImage source={{ uri: p }} style={{ width: 80, height: 80, borderRadius: theme.radius.md }} />
+        <Pressable onPress={() => onRemove(i)} style={{ position: "absolute", top: -6, left: -6, backgroundColor: theme.colors.error, width: 22, height: 22, borderRadius: 11, alignItems: "center", justifyContent: "center" }}>
+          <Ionicons name="close" size={14} color="#fff" />
+        </Pressable>
+      </View>
+    ))}
+    <Pressable onPress={onAdd} style={{ width: 80, height: 80, borderWidth: 1, borderStyle: "dashed", borderColor: theme.colors.border, borderRadius: theme.radius.md, alignItems: "center", justifyContent: "center" }}>
+      <Ionicons name="add" size={24} color={theme.colors.onSurfaceTertiary} />
+    </Pressable>
+  </View>
+);
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: theme.colors.surface },
@@ -300,6 +485,10 @@ const styles = StyleSheet.create({
   chipText: { fontSize: 13, color: theme.colors.onSurfaceSecondary, fontWeight: "600" },
   chipTextActive: { color: "#fff" },
   card: { flexDirection: "row-reverse", alignItems: "flex-start", gap: theme.spacing.md, backgroundColor: theme.colors.surfaceSecondary, borderRadius: theme.radius.md, padding: theme.spacing.md, marginBottom: theme.spacing.sm, borderWidth: 1, borderColor: theme.colors.border },
+  cardCol: { backgroundColor: theme.colors.surfaceSecondary, borderRadius: theme.radius.md, padding: theme.spacing.md, marginBottom: theme.spacing.sm, borderWidth: 1, borderColor: theme.colors.border },
+  contactRow: { flexDirection: "row-reverse", gap: 8, marginTop: theme.spacing.sm, paddingTop: theme.spacing.sm, borderTopWidth: 1, borderTopColor: theme.colors.divider },
+  contactBtn: { flex: 1, flexDirection: "row-reverse", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 8, borderRadius: theme.radius.md },
+  contactText: { color: "#fff", fontSize: 13, fontWeight: "700" },
   iconBox: { width: 44, height: 44, borderRadius: 22, backgroundColor: theme.colors.brandTertiary, alignItems: "center", justifyContent: "center" },
   name: { fontSize: 15, fontWeight: "700", color: theme.colors.onSurface, textAlign: "right" },
   subtle: { fontSize: 12, color: theme.colors.onSurfaceTertiary, textAlign: "right", marginTop: 2 },

@@ -10,7 +10,11 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.emergent.fieldopshub.za8bdr"
+      "bundleIdentifier": "com.emergent.fieldopshub.za8bdr",
+      "infoPlist": {
+        "NSCameraUsageDescription": "التقاط صور للسيارات والحوادث والوقود",
+        "NSPhotoLibraryUsageDescription": "اختيار صور للسيارات والحوادث والوقود"
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -18,7 +22,8 @@
         "backgroundColor": "#000000"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.emergent.fieldopshub.za8bdr"
+      "package": "com.emergent.fieldopshub.za8bdr",
+      "permissions": ["CAMERA", "READ_MEDIA_IMAGES"]
     },
     "web": {
       "bundler": "metro",

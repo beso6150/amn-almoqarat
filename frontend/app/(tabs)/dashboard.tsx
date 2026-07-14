@@ -6,15 +6,17 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { BarChart, PieChart } from "react-native-gifted-charts";
 import { LinearGradient } from "expo-linear-gradient";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/auth";
 import { theme } from "@/src/theme";
+import { syncReminders } from "@/src/notifications";
 
 const W = Dimensions.get("window").width;
 
 export default function DashboardScreen() {
-  const { user, logout } = useAuth();
+  const { user, logout, isAdmin } = useAuth();
+  const router = useRouter();
   const [stats, setStats] = useState<any>(null);
   const [monthly, setMonthly] = useState<any[]>([]);
   const [maintStatus, setMaintStatus] = useState<any>(null);
@@ -29,6 +31,11 @@ export default function DashboardScreen() {
       setStats(s);
       setMonthly(m);
       setMaintStatus(ms);
+      // schedule reminders in background
+      Promise.all([api.maintenance.list(), api.leaves.list(), api.vehicles.list(), api.employees.list()])
+        .then(([maintenance, leaves, vehicles, employees]) => {
+          syncReminders({ maintenance, leaves, vehicles, employees });
+        }).catch(() => {});
     } catch (e) {}
     setLoading(false);
     setRefreshing(false);
@@ -80,6 +87,9 @@ export default function DashboardScreen() {
             <View>
               <Text style={styles.helloText}>مرحباً</Text>
               <Text style={styles.userName} testID="dashboard-username">{user?.full_name}</Text>
+              <Text style={{ color: "rgba(255,255,255,0.75)", fontSize: 11, textAlign: "right", marginTop: 2 }}>
+                {user?.role === "admin" ? "مدير عمليات" : user?.role === "supervisor" ? "مشرف أمن" : "رجل أمن"}
+              </Text>
             </View>
             <Pressable testID="logout-button" onPress={logout} style={styles.iconBtn}>
               <Ionicons name="log-out-outline" size={22} color="#fff" />
@@ -93,10 +103,18 @@ export default function DashboardScreen() {
         contentContainerStyle={{ paddingBottom: 40 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.brandPrimary} />}
       >
-        {hasNoData && (
+        {hasNoData && isAdmin && (
           <Pressable testID="seed-demo-button" onPress={handleSeed} style={styles.seedBanner}>
             <Ionicons name="sparkles" size={20} color={theme.colors.brandSecondary} />
             <Text style={styles.seedText}>اضغط لإضافة بيانات تجريبية</Text>
+          </Pressable>
+        )}
+
+        {isAdmin && stats && stats.pending_users > 0 && (
+          <Pressable testID="pending-users-banner" onPress={() => router.push("/users")} style={[styles.seedBanner, { backgroundColor: "#E8F5E9", borderColor: theme.colors.success }]}>
+            <Ionicons name="person-add" size={20} color={theme.colors.success} />
+            <Text style={styles.seedText}>{stats.pending_users} حساب بانتظار موافقتك</Text>
+            <Ionicons name="chevron-back" size={18} color={theme.colors.success} />
           </Pressable>
         )}
 
@@ -198,6 +216,24 @@ export default function DashboardScreen() {
         <View style={styles.costCard} testID="maintenance-cost-card">
           <Text style={styles.costLabel}>تكلفة الصيانة هذه السنة</Text>
           <Text style={styles.costVal}>{(stats?.maintenance_cost_year ?? 0).toLocaleString()} ر.س</Text>
+        </View>
+
+        <View style={styles.summaryRow}>
+          <View style={styles.summaryCard} testID="summary-fuel">
+            <Ionicons name="flame" size={20} color={theme.colors.brandSecondary} />
+            <Text style={styles.sumVal}>{(stats?.fuel_cost_year ?? 0).toLocaleString()}</Text>
+            <Text style={styles.sumLbl}>وقود ر.س / {stats?.fuel_count_year || 0} تعبئة</Text>
+          </View>
+          <View style={styles.summaryCard} testID="summary-accidents">
+            <Ionicons name="alert-circle" size={20} color={theme.colors.error} />
+            <Text style={styles.sumVal}>{stats?.open_accidents ?? 0}</Text>
+            <Text style={styles.sumLbl}>حوادث مفتوحة</Text>
+          </View>
+          <View style={styles.summaryCard} testID="summary-accident-cost">
+            <Ionicons name="cash" size={20} color={theme.colors.warning} />
+            <Text style={styles.sumVal}>{(stats?.accident_cost_year ?? 0).toLocaleString()}</Text>
+            <Text style={styles.sumLbl}>ر.س حوادث</Text>
+          </View>
         </View>
       </ScrollView>
     </View>

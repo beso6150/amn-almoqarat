@@ -29,47 +29,44 @@ async function req(path: string, opts: RequestInit = {}) {
   return data;
 }
 
+const crud = (name: string) => ({
+  list: () => req(`/${name}`),
+  create: (b: any) => req(`/${name}`, { method: "POST", body: JSON.stringify(b) }),
+  update: (id: string, b: any) => req(`/${name}/${id}`, { method: "PUT", body: JSON.stringify(b) }),
+  delete: (id: string) => req(`/${name}/${id}`, { method: "DELETE" }),
+});
+
 export const api = {
   register: (email: string, password: string, full_name: string) =>
     req("/auth/register", { method: "POST", body: JSON.stringify({ email, password, full_name }) }),
   login: (email: string, password: string) =>
     req("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
   me: () => req("/auth/me"),
-
   seed: () => req("/seed", { method: "POST" }),
+
+  users: {
+    list: () => req("/users"),
+    pending: () => req("/users/pending"),
+    update: (id: string, b: any) => req(`/users/${id}`, { method: "PUT", body: JSON.stringify(b) }),
+    delete: (id: string) => req(`/users/${id}`, { method: "DELETE" }),
+  },
 
   dashboard: () => req("/stats/dashboard"),
   violationsMonthly: () => req("/stats/violations-monthly"),
   violationsByVehicle: () => req("/stats/violations-by-vehicle"),
   maintenanceStatus: () => req("/stats/maintenance-status"),
+  fuelMonthly: () => req("/stats/fuel-monthly"),
+  fuelByVehicle: () => req("/stats/fuel-by-vehicle"),
+  accidentsSummary: () => req("/stats/accidents-summary"),
+  vehicleHistory: (id: string) => req(`/vehicles/${id}/history`),
 
-  listLocations: () => req("/locations"),
-  createLocation: (b: any) => req("/locations", { method: "POST", body: JSON.stringify(b) }),
-  updateLocation: (id: string, b: any) => req(`/locations/${id}`, { method: "PUT", body: JSON.stringify(b) }),
-  deleteLocation: (id: string) => req(`/locations/${id}`, { method: "DELETE" }),
-
-  listEmployees: () => req("/employees"),
-  createEmployee: (b: any) => req("/employees", { method: "POST", body: JSON.stringify(b) }),
-  updateEmployee: (id: string, b: any) => req(`/employees/${id}`, { method: "PUT", body: JSON.stringify(b) }),
-  deleteEmployee: (id: string) => req(`/employees/${id}`, { method: "DELETE" }),
-
-  listVehicles: () => req("/vehicles"),
-  createVehicle: (b: any) => req("/vehicles", { method: "POST", body: JSON.stringify(b) }),
-  updateVehicle: (id: string, b: any) => req(`/vehicles/${id}`, { method: "PUT", body: JSON.stringify(b) }),
-  deleteVehicle: (id: string) => req(`/vehicles/${id}`, { method: "DELETE" }),
-
-  listMaintenance: () => req("/maintenance"),
-  createMaintenance: (b: any) => req("/maintenance", { method: "POST", body: JSON.stringify(b) }),
-  updateMaintenance: (id: string, b: any) => req(`/maintenance/${id}`, { method: "PUT", body: JSON.stringify(b) }),
-  deleteMaintenance: (id: string) => req(`/maintenance/${id}`, { method: "DELETE" }),
-
-  listViolations: () => req("/violations"),
-  createViolation: (b: any) => req("/violations", { method: "POST", body: JSON.stringify(b) }),
-  updateViolation: (id: string, b: any) => req(`/violations/${id}`, { method: "PUT", body: JSON.stringify(b) }),
-  deleteViolation: (id: string) => req(`/violations/${id}`, { method: "DELETE" }),
-
-  listLeaves: () => req("/leaves"),
-  createLeave: (b: any) => req("/leaves", { method: "POST", body: JSON.stringify(b) }),
-  updateLeave: (id: string, b: any) => req(`/leaves/${id}`, { method: "PUT", body: JSON.stringify(b) }),
-  deleteLeave: (id: string) => req(`/leaves/${id}`, { method: "DELETE" }),
+  locations: crud("locations"),
+  employees: crud("employees"),
+  vehicles: crud("vehicles"),
+  maintenance: crud("maintenance"),
+  violations: crud("violations"),
+  leaves: crud("leaves"),
+  fuel: crud("fuel_records"),
+  accidents: crud("accidents"),
+  assignments: crud("assignments"),
 };

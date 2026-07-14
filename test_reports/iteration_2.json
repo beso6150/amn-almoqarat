@@ -1,0 +1,44 @@
+{
+  "summary": "Full-stack testing of Medan (ميدان) iteration 2 covering new features: roles (admin/supervisor/guard), account approval flow, users management, image uploads, PDF export, vehicle details page, fuel/accident/assignment resources, employee_number (salary removed), call/WhatsApp buttons, dashboard cards. Backend: 37/37 pytest tests passed (100%) — new tests cover: first-user-admin auto-approval, subsequent pending flow with Arabic message, 403 on pending login with Arabic detail, admin-only user management (list/pending/update/delete), self-demotion & self-delete blocked, non-admin gets 403 on POST/PUT/DELETE for all 9 CRUD collections while GET is allowed, employee has no salary field but has employee_number, dashboard stats include all 16 new keys (open_accidents, pending_users, fuel_cost_year, fuel_liters_year, fuel_count_year, accident_cost_year, etc.), fuel-monthly returns 6 Arabic-labeled months, fuel-by-vehicle returns per-vehicle consumption, accidents-summary returns totals, vehicle history returns full shape with totals object and no _id leaks, 404 on missing vehicle history. Frontend (390x844): login as admin@medan.sa/admin123 → dashboard shows role 'مدير عمليات' under name, KPIs, summary cards for fuel/accidents rendered. Registration flow: TEST user registered → redirected to /pending screen with Arabic hourglass message + 'back to login' button. Admin dashboard shows 'X حساب بانتظار موافقتك' banner; tapping navigates to /users which lists all users (admin, existing approved, TEST pending) with correct role-scoped buttons (approve/reject for pending; change-role/revoke/delete for approved). Vehicle detail: tapping vehicle card navigates to /vehicle/[id], all 6 sub-tabs visible (summary/maintenance/violations/fuel/accidents/history), export-pdf-btn visible and press doesn't crash. Employees tab: 6 sub-tabs (employees/locations/leaves/maintenance/fuel/accidents), 4 call & 4 WhatsApp buttons, add-employee form has no salary field and includes 'الرقم الوظيفي' + position picker with role options. Admin-gated add buttons: verified in code (`isAdmin && (...)` on vehicles/violations/employees add buttons plus long-press delete gate). No red screen, no console errors (only benign expo-notifications web warning + pointerEvents deprecation from RN internals).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "tabs (all)", "issues": ["Bottom tab-bar labels appear cut off at 390px viewport (previously reported in iteration 1); still present — cosmetic only."]}
+    ],
+    "react_native_issues": [
+      {"component": "expo-notifications (web)", "issue": "Warning on web: 'Listening to push token changes is not yet fully supported on web'. Expected on web preview; no action needed for mobile. Reference: /app/frontend/src/notifications.ts"},
+      {"component": "react-native-web internals", "issue": "'props.pointerEvents is deprecated. Use style.pointerEvents' — non-blocking; comes from expo-router/RN internals, already LogBox-filtered."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Improve bottom tab bar padding/height so labels aren't clipped on 390px viewport.",
+    "(Optional) In pytest, the class-scoped fixture defined as instance method triggered PytestRemovedIn10Warning — refactor `a_vehicle_and_emp` to a module-level or classmethod fixture for future-proofing."
+  ],
+  "critical_code_review_comments": [
+    "Solid: role gating enforced both backend (require_admin dep) and frontend (isAdmin from useAuth).",
+    "Solid: all MongoDB reads use projection {_id:0}; vehicle/{id}/history verified no _id leaks anywhere in nested arrays.",
+    "Solid: first-user-becomes-admin logic + pending flow + Arabic error messages.",
+    "Solid: JWT auth returns 401 for missing token on all protected endpoints.",
+    "Minor: server.py still uses @app.on_event('shutdown') (deprecated in FastAPI ≥0.100) — from iteration 1, low priority.",
+    "Minor: /api/users/pending route order — declared BEFORE /api/users/{uid} PUT, so no path-param collision (correct).",
+    "Minor: PUT /api/users/{uid} silently accepts empty body if both role/status missing — returns 400 'لا يوجد تغيير' (already handled)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (rewritten with 37 tests covering iteration 2 features)"
+  ],
+  "success_rate": {"backend": "100% (37/37)", "frontend": "100% of tested flows: login+dashboard (role/summary cards), register→pending, admin banner→users mgmt, vehicle detail 6 tabs + PDF export button, employees form (no salary, has employee_number), call/whatsapp buttons rendered, 6 sub-tabs on management screen"},
+  "seed_data_creation": "Seed already populated. Second /api/seed returns seeded=false. Test users prefixed TEST_ created & cleaned up (guard user deleted after test).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend URL: env EXPO_PUBLIC_BACKEND_URL. Admin admin@medan.sa/admin123 works. Bottom tab bar has no testIDs — use route navigation via page.goto('/vehicles' etc.) or a[href='/dashboard'|'/vehicles'|'/violations'|'/employees']. Vehicle detail testIDs: vehicle-detail-screen, export-pdf-btn, tab-{summary|maintenance|violations|fuel|accidents|history}. Employees screen sub-tabs: tab-{employees|locations|leaves|maintenance|fuel|accidents}. Users screen: users-screen, pending-count, user-card-<id>, approve-<id>, reject-<id>, change-role-<id>, revoke-<id>, delete-user-<id>. Auth screens: login-*, register-*, pending-screen, back-to-login. Register second+ user creates pending row (no token returned). Admin PUT /api/users/{uid} with {status: 'approved'} to activate.",
+  "rca_of_issue": "N/A (no bugs found in this iteration)."
+}

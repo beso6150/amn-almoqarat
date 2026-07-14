@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from "react";
-import { View, Text, StyleSheet, FlatList, Pressable, TextInput, ActivityIndicator, Alert, Dimensions } from "react-native";
+import { View, Text, StyleSheet, FlatList, Pressable, TextInput, ActivityIndicator, Alert, Dimensions, Image as ExpoImage } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { LineChart } from "react-native-gifted-charts";
@@ -8,10 +8,13 @@ import { api } from "@/src/api";
 import { theme } from "@/src/theme";
 import { FormSheet, Field, inputStyle } from "@/src/FormSheet";
 import { PickerRow } from "./vehicles";
+import { useAuth } from "@/src/auth";
+import { chooseImage } from "@/src/helpers";
 
 const W = Dimensions.get("window").width;
 
 export default function ViolationsScreen() {
+  const { isAdmin } = useAuth();
   const [items, setItems] = useState<any[]>([]);
   const [monthly, setMonthly] = useState<any[]>([]);
   const [vehicles, setVehicles] = useState<any[]>([]);
@@ -27,7 +30,7 @@ export default function ViolationsScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [v, m, veh, emp] = await Promise.all([api.listViolations(), api.violationsMonthly(), api.listVehicles(), api.listEmployees()]);
+      const [v, m, veh, emp] = await Promise.all([api.violations.list(), api.violationsMonthly(), api.vehicles.list(), api.employees.list()]);
       setItems(v); setMonthly(m); setVehicles(veh); setEmployees(emp);
     } catch {}
     setLoading(false);
@@ -36,12 +39,14 @@ export default function ViolationsScreen() {
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const openAdd = () => {
+    if (!isAdmin) return;
     setEditing(null);
     setForm({ vehicle_id: vehicles[0]?.id || null, employee_id: null, violation_type: "", amount: "", date: new Date().toISOString().slice(0, 10), location: "", status: "unpaid", notes: "" });
     setSheetOpen(true);
   };
 
   const openEdit = (it: any) => {
+    if (!isAdmin) return;
     setEditing(it);
     setForm({ ...it, amount: String(it.amount) });
     setSheetOpen(true);
@@ -54,8 +59,8 @@ export default function ViolationsScreen() {
     }
     const body = { ...form, amount: parseFloat(form.amount) };
     try {
-      if (editing) await api.updateViolation(editing.id, body);
-      else await api.createViolation(body);
+      if (editing) await api.violations.update(editing.id, body);
+      else await api.violations.create(body);
       setSheetOpen(false);
       load();
     } catch (e: any) { Alert.alert("خطأ", e.message); }
@@ -64,13 +69,13 @@ export default function ViolationsScreen() {
   const remove = (it: any) => {
     Alert.alert("حذف المخالفة", "هل أنت متأكد؟", [
       { text: "إلغاء", style: "cancel" },
-      { text: "حذف", style: "destructive", onPress: async () => { await api.deleteViolation(it.id); load(); } },
+      { text: "حذف", style: "destructive", onPress: async () => { await api.violations.delete(it.id); load(); } },
     ]);
   };
 
   const togglePaid = async (it: any) => {
     try {
-      await api.updateViolation(it.id, { ...it, status: it.status === "paid" ? "unpaid" : "paid" });
+      await api.violations.update(it.id, { ...it, status: it.status === "paid" ? "unpaid" : "paid" });
       load();
     } catch {}
   };
@@ -89,9 +94,11 @@ export default function ViolationsScreen() {
     <SafeAreaView style={styles.root} edges={["top"]}>
       <View style={styles.header}>
         <Text style={styles.title}>المخالفات المرورية</Text>
-        <Pressable testID="add-violation-btn" onPress={openAdd} style={styles.addBtn}>
-          <Ionicons name="add" size={22} color="#fff" />
-        </Pressable>
+        {isAdmin && (
+          <Pressable testID="add-violation-btn" onPress={openAdd} style={styles.addBtn}>
+            <Ionicons name="add" size={22} color="#fff" />
+          </Pressable>
+        )}
       </View>
 
       {loading ? (
@@ -198,6 +205,23 @@ export default function ViolationsScreen() {
         </Field>
         <Field label="الحالة">
           <PickerRow value={form.status} onChange={(v: any) => setForm({ ...form, status: v })} options={[{ value: "unpaid", label: "غير مسددة" }, { value: "paid", label: "مسددة" }]} />
+        </Field>
+        <Field label="صورة المخالفة">
+          {form.photo ? (
+            <View>
+              <Pressable onPress={() => chooseImage((d) => setForm({ ...form, photo: d }))}>
+                <ExpoImage source={{ uri: form.photo }} style={{ width: "100%", height: 160, borderRadius: theme.radius.md }} />
+              </Pressable>
+              <Pressable onPress={() => setForm({ ...form, photo: "" })} style={{ marginTop: 6, alignSelf: "flex-end" }}>
+                <Text style={{ color: theme.colors.error, fontSize: 12 }}>حذف الصورة</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable onPress={() => chooseImage((d) => setForm({ ...form, photo: d }))} style={{ height: 100, borderWidth: 1, borderStyle: "dashed", borderColor: theme.colors.border, borderRadius: theme.radius.md, alignItems: "center", justifyContent: "center", gap: 6 }}>
+              <Ionicons name="camera" size={24} color={theme.colors.onSurfaceTertiary} />
+              <Text style={{ color: theme.colors.onSurfaceTertiary, fontSize: 13 }}>إضافة صورة</Text>
+            </Pressable>
+          )}
         </Field>
         <Field label="ملاحظات">
           <TextInput style={[inputStyle, { minHeight: 60 }]} value={form.notes} onChangeText={(t) => setForm({ ...form, notes: t })} multiline />
