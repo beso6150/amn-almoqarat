@@ -12,7 +12,6 @@ from datetime import datetime, timezone, timedelta, date
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 from urllib.parse import quote
-print("=== THIS IS MY SERVER FILE ===")
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
@@ -437,13 +436,6 @@ async def register(body: UserRegister):
     })
     return {"pending": True, "message": "تم استلام طلبك. سيتم إشعار المدير للموافقة وإرسال كلمة المرور عبر واتساب."}
 
-@api_router.get("/auth/status")
-async def auth_status():
-    admin_exists = await db.users.count_documents({"role": "admin"}) > 0
-    return {
-        "ok": True,
-        "admin_exists": admin_exists
-    }
 @api_router.post("/auth/login")
 async def login(body: UserLoginPhone):
     phone = normalize_phone(body.phone)
@@ -463,13 +455,6 @@ async def login(body: UserLoginPhone):
             "must_change_password": user.get("must_change_password", False),
         },
     }
-
-
-@api_router.get("/auth/status")
-async def auth_status():
-    """Check if admin exists — used by frontend to decide onboarding vs login."""
-    count = await db.users.count_documents({})
-    return {"admin_exists": count > 0}
 
 
 @api_router.get("/auth/me")
@@ -1682,6 +1667,10 @@ async def shutdown_db_client():
     task = getattr(app.state, "leave_notification_task", None)
     if task:
         task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     client.close()
 
 
