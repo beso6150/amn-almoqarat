@@ -33,7 +33,7 @@ export default function VehiclesScreen() {
     try {
       const [v, l, e] = await Promise.all([api.vehicles.list(), api.locations.list(), api.employees.list()]);
       setVehicles(v); setLocations(l); setEmployees(e);
-    } catch {}
+    } catch { }
     setLoading(false);
   }, []);
 

@@ -42,7 +42,7 @@ export default function ManagementScreen() {
       ]);
       setLocations(l); setEmployees(e); setLeaves(lv); setMaintenance(m); setVehicles(v);
       setFuel(f); setAccidents(a); setViolations(vio);
-    } catch {}
+    } catch { }
     setLoading(false);
   }, []);
 
@@ -84,9 +84,53 @@ export default function ManagementScreen() {
         if (!form.name) return Alert.alert("خطأ", "الاسم مطلوب");
         if (editing) await api.employees.update(editing.id, form); else await api.employees.create(form);
       } else if (tab === "leaves") {
-        if (!form.employee_id) return Alert.alert("خطأ", "يرجى اختيار موظف");
-        const body = { ...form, leave_type: "سنوية" };
-        if (editing) await api.leaves.update(editing.id, body); else await api.leaves.create(body);
+        if (!form.employee_id) {
+          return Alert.alert("خطأ", "يرجى اختيار موظف");
+        }
+
+        const body = {
+          ...form,
+          leave_type: "سنوية",
+          status: form.status || "approved",
+        };
+
+        let savedLeave: any;
+
+        if (editing) {
+          savedLeave = await api.leaves.update(editing.id, body);
+        } else {
+          savedLeave = await api.leaves.create(body);
+        }
+
+        const phone = savedLeave?.whatsapp_phone;
+        const message = savedLeave?.whatsapp_message;
+
+        setSheetOpen(false);
+        await load();
+
+        if (phone && message) {
+          Alert.alert(
+            "تم حفظ الإجازة",
+            "هل تريد إرسال تفاصيل الإجازة للموظف عبر واتساب؟",
+            [
+              {
+                text: "إلغاء",
+                style: "cancel",
+              },
+              {
+                text: "إرسال واتساب",
+                onPress: () => openWhatsApp(phone, message),
+              },
+            ]
+          );
+        } else {
+          Alert.alert(
+            "تم حفظ الإجازة",
+            "لم يظهر زر واتساب لأن الموظف لا يملك رقم جوال مسجلًا."
+          );
+        }
+
+        return;
       } else if (tab === "maintenance") {
         if (!form.vehicle_id || !form.maintenance_type) return Alert.alert("خطأ", "السيارة ونوع الصيانة مطلوبان");
         const body = { ...form, cost: parseFloat(form.cost) || 0, next_due_date: form.next_due_date || null };
@@ -121,12 +165,14 @@ export default function ManagementScreen() {
   const askNotifyViolation = (vid: string) => {
     Alert.alert("إشعار الموظف", "هل تريد إرسال إشعار عبر واتساب للموظف بالمخالفة؟", [
       { text: "لاحقاً", style: "cancel" },
-      { text: "إرسال الآن", onPress: async () => {
-        try {
-          const info = await api.violationNotifyInfo(vid);
-          openWhatsApp(info.phone, info.message);
-        } catch (e: any) { Alert.alert("تعذر الإرسال", e.message); }
-      } },
+      {
+        text: "إرسال الآن", onPress: async () => {
+          try {
+            const info = await api.violationNotifyInfo(vid);
+            openWhatsApp(info.phone, info.message);
+          } catch (e: any) { Alert.alert("تعذر الإرسال", e.message); }
+        }
+      },
     ]);
   };
 
@@ -134,18 +180,20 @@ export default function ManagementScreen() {
     if (!isAdmin) return;
     Alert.alert("تأكيد الحذف", "هل أنت متأكد؟", [
       { text: "إلغاء", style: "cancel" },
-      { text: "حذف", style: "destructive", onPress: async () => {
-        try {
-          if (tab === "locations") await api.locations.delete(it.id);
-          else if (tab === "employees") await api.employees.delete(it.id);
-          else if (tab === "leaves") await api.leaves.delete(it.id);
-          else if (tab === "maintenance") await api.maintenance.delete(it.id);
-          else if (tab === "fuel") await api.fuel.delete(it.id);
-          else if (tab === "accidents") await api.accidents.delete(it.id);
-          else if (tab === "violations") await api.violations.delete(it.id);
-          load();
-        } catch (e: any) { Alert.alert("خطأ", e.message); }
-      } },
+      {
+        text: "حذف", style: "destructive", onPress: async () => {
+          try {
+            if (tab === "locations") await api.locations.delete(it.id);
+            else if (tab === "employees") await api.employees.delete(it.id);
+            else if (tab === "leaves") await api.leaves.delete(it.id);
+            else if (tab === "maintenance") await api.maintenance.delete(it.id);
+            else if (tab === "fuel") await api.fuel.delete(it.id);
+            else if (tab === "accidents") await api.accidents.delete(it.id);
+            else if (tab === "violations") await api.violations.delete(it.id);
+            load();
+          } catch (e: any) { Alert.alert("خطأ", e.message); }
+        }
+      },
     ]);
   };
 
@@ -351,7 +399,7 @@ export default function ManagementScreen() {
       </View>
 
       <View style={styles.chipRowWrap}>
-        <ScrollView horizontal inverted showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: theme.spacing.md, gap: 8 }}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: theme.spacing.md, gap: 8 }}>
           {tabs.map(t => (
             <Pressable key={t.key} testID={`tab-${t.key}`} onPress={() => { setTab(t.key as Tab); setSearch(""); }} style={[styles.chip, tab === t.key && styles.chipActive]}>
               <Ionicons name={t.icon as any} size={14} color={tab === t.key ? "#fff" : theme.colors.onSurfaceSecondary} />

@@ -26,6 +26,8 @@ export default function LoginScreen() {
     }
     setLoading(true);
     try {
+      console.log(phone);
+      console.log(password);
       const { mustChange } = await login(phone.trim(), password);
       if (mustChange) router.replace("/(auth)/change-password");
       else router.replace("/(tabs)/dashboard");

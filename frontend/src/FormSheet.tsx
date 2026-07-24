@@ -65,7 +65,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surfaceSecondary,
     borderTopLeftRadius: theme.radius.lg,
     borderTopRightRadius: theme.radius.lg,
-    maxHeight: "85%",
+    height: "80%",
   },
   header: {
     flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between",

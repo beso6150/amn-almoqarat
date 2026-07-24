@@ -1,49 +1,21 @@
 {
   "expo": {
-    "name": "frontend",
-    "slug": "frontend",
-    "version": "1.0.0",
-    "orientation": "portrait",
+    "name": "أمن المقرات",
+    "slug": "amn-almuqarrat",
+    "scheme": "amn-almuqarrat",
     "icon": "./assets/images/icon.png",
-    "scheme": "frontend",
-    "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
-    "ios": {
-      "supportsTablet": true,
-      "bundleIdentifier": "com.emergent.fieldopshub.za8bdr",
-      "infoPlist": {
-        "NSCameraUsageDescription": "التقاط صور للسيارات والحوادث والوقود",
-        "NSPhotoLibraryUsageDescription": "اختيار صور للسيارات والحوادث والوقود"
-      }
-    },
     "android": {
+      "package": "sa.amnalmuqarrat.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#000000"
-      },
-      "edgeToEdgeEnabled": true,
-      "package": "com.emergent.fieldopshub.za8bdr",
-      "permissions": ["CAMERA", "READ_MEDIA_IMAGES"]
+        "backgroundColor": "#FFFFFF"
+      }
+    },
+    "ios": {
+      "bundleIdentifier": "sa.amnalmuqarrat.app"
     },
     "web": {
-      "bundler": "metro",
-      "output": "single",
       "favicon": "./assets/images/favicon.png"
-    },
-    "plugins": [
-      "expo-router",
-      [
-        "expo-splash-screen",
-        {
-          "image": "./assets/images/splash-image.png",
-          "imageWidth": 200,
-          "resizeMode": "contain",
-          "backgroundColor": "#000000"
-        }
-      ]
-    ],
-    "experiments": {
-      "typedRoutes": true
     }
   }
 }

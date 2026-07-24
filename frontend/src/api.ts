@@ -2,7 +2,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL || "";
 const API = `${BASE}/api`;
-
+console.log("BASE =", BASE);
+console.log("API =", API);
 const TOKEN_KEY = "medan_token";
 
 export const setToken = async (t: string | null) => {
@@ -18,6 +19,12 @@ async function req(path: string, opts: RequestInit = {}) {
     ...(opts.headers as Record<string, string> || {}),
   };
   if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  console.log("BASE =", BASE);
+  console.log("API =", API);
+  console.log("URL =", `${API}${path}`);
+  console.log("BODY =", opts.body);
+
   const res = await fetch(`${API}${path}`, { ...opts, headers });
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;

@@ -269,19 +269,19 @@ class TestSchedule:
         r = requests.get(f"{API}/schedule/on-date?date_str=2026-07-16", headers=auth_headers)
         assert r.status_code == 200, r.text
         d = r.json()
-        assert d["day"] == "A" and d["night"] == "B"
-        assert d["day_shift"]["hours"] == "06:00 - 18:00"
+        assert d["morning"] == "A" and d["evening"] == "B"
+        assert d["Morning_shift"]["hours"] == "06:00 - 18:00"
         assert d["night_shift"]["hours"] == "18:00 - 06:00"
 
     def test_schedule_on_date_cd(self, auth_headers):
         r = requests.get(f"{API}/schedule/on-date?date_str=2026-07-20", headers=auth_headers)
         d = r.json()
-        assert d["day"] == "C" and d["night"] == "D"
+        assert d["morning"] == "C" and d["evening"] == "D"
 
     def test_schedule_on_date_cycle_wrap(self, auth_headers):
         r = requests.get(f"{API}/schedule/on-date?date_str=2026-07-24", headers=auth_headers)
         d = r.json()
-        assert d["day"] == "A" and d["night"] == "B"
+        assert d["Morning"] == "A" and d["Evening"] == "B"
 
     def test_schedule_week_returns_14_entries(self, auth_headers):
         r = requests.get(f"{API}/schedule/week", headers=auth_headers)
@@ -289,8 +289,8 @@ class TestSchedule:
         arr = r.json()
         assert len(arr) == 14
         for e in arr:
-            assert e["day"] in ("A", "C")
-            assert e["night"] in ("B", "D")
+            assert e["Morning"] in ("A", "C")
+            assert e["Evening"] in ("B", "D")
 
 
 # ============ STATS ============

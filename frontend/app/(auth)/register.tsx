@@ -20,6 +20,8 @@ export default function RegisterScreen() {
     if (!name || !phone) return setError("يرجى ملء جميع الحقول");
     setLoading(true);
     try {
+      console.log(name);
+      console.log(phone);
       const res = await register(name.trim(), phone.trim());
       if (res.pending) {
         router.replace({ pathname: "/(auth)/pending", params: { message: res.message || "بانتظار موافقة المدير" } });

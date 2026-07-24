@@ -23,7 +23,7 @@ export default function UsersScreen() {
   const [credModal, setCredModal] = useState<{ phone: string; password: string; name: string; message: string } | null>(null);
 
   const load = useCallback(async () => {
-    try { setUsers(await api.users.list()); } catch {}
+    try { setUsers(await api.users.list()); } catch { }
     setLoading(false);
   }, []);
 
@@ -41,14 +41,16 @@ export default function UsersScreen() {
   const resetPassword = async (u: any) => {
     Alert.alert("إعادة تعيين كلمة المرور", `توليد كلمة مرور جديدة لـ ${u.full_name}؟`, [
       { text: "إلغاء", style: "cancel" },
-      { text: "متابعة", onPress: async () => {
-        try {
-          const res = await api.users.resetPassword(u.id);
-          const info = await api.users.notifyMessage({ temp_password: res.temp_password, phone: res.phone, full_name: res.full_name });
-          setCredModal({ phone: info.phone, password: res.temp_password, name: res.full_name, message: info.message });
-          load();
-        } catch (e: any) { Alert.alert("خطأ", e.message); }
-      } },
+      {
+        text: "متابعة", onPress: async () => {
+          try {
+            const res = await api.users.resetPassword(u.id);
+            const info = await api.users.notifyMessage({ temp_password: res.temp_password, phone: res.phone, full_name: res.full_name });
+            setCredModal({ phone: info.phone, password: res.temp_password, name: res.full_name, message: info.message });
+            load();
+          } catch (e: any) { Alert.alert("خطأ", e.message); }
+        }
+      },
     ]);
   };
 
@@ -60,10 +62,12 @@ export default function UsersScreen() {
   const removeUser = (u: any) => {
     Alert.alert("حذف حساب", `حذف ${u.full_name}؟`, [
       { text: "إلغاء", style: "cancel" },
-      { text: "حذف", style: "destructive", onPress: async () => {
-        try { await api.users.delete(u.id); load(); }
-        catch (e: any) { Alert.alert("خطأ", e.message); }
-      } },
+      {
+        text: "حذف", style: "destructive", onPress: async () => {
+          try { await api.users.delete(u.id); load(); }
+          catch (e: any) { Alert.alert("خطأ", e.message); }
+        }
+      },
     ]);
   };
 

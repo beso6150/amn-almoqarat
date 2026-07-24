@@ -1,16 +1,17 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-import os, logging, uuid, secrets, string, re
+import os, logging, uuid, secrets, string, re, asyncio
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta, date
 from passlib.context import CryptContext
 from jose import jwt, JWTError
-
+from urllib.parse import quote
+print("=== THIS IS MY SERVER FILE ===")
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
@@ -157,6 +158,7 @@ class Employee(BaseModel):
     position: Optional[str] = "رجل أمن"
     group: Optional[str] = "none"
     location_id: Optional[str] = None
+    annual_leave_balance: int = 30
     created_at: str = Field(default_factory=now_iso)
 
 class EmployeeCreate(BaseModel):
@@ -167,8 +169,18 @@ class EmployeeCreate(BaseModel):
     position: Optional[str] = "رجل أمن"
     group: Optional[str] = "none"
     location_id: Optional[str] = None
+    annual_leave_balance: int = 30
 
-
+class VehicleUpdate(BaseModel):
+    plate_number: str
+    model: str
+    year: Optional[int] = None
+    color: Optional[str] = ""
+    location_id: Optional[str] = None
+    driver_id: Optional[str] = None
+    status: str = "active"
+    photo: Optional[str] = ""
+    
 class Vehicle(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     plate_number: str
@@ -249,6 +261,15 @@ class Leave(BaseModel):
     end_date: str
     reason: Optional[str] = ""
     status: str = "approved"
+    duration_days: int = 0
+    return_date: Optional[str] = None
+    approval_notification_sent: bool = False
+    start_notification_sent: bool = False
+    end_notification_sent: bool = False
+    return_notification_sent: bool = False
+    whatsapp_phone: Optional[str] = None
+    whatsapp_message: Optional[str] = None
+    whatsapp_url: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
 
 class LeaveCreate(BaseModel):
@@ -347,6 +368,13 @@ async def ensure_real_locations():
 
 
 # ============ AUTH ============
+@api_router.get("/auth/status")
+async def auth_status():
+    admin_exists = await db.users.count_documents({"role": "admin"}) > 0
+    return {
+        "ok": True,
+        "admin_exists": admin_exists
+    }
 @api_router.post("/auth/admin-setup")
 async def admin_setup(body: AdminSetup):
     """First-time setup: creates the initial admin. Only works if no user exists."""
@@ -399,7 +427,13 @@ async def register(body: UserRegister):
     })
     return {"pending": True, "message": "تم استلام طلبك. سيتم إشعار المدير للموافقة وإرسال كلمة المرور عبر واتساب."}
 
-
+@api_router.get("/auth/status")
+async def auth_status():
+    admin_exists = await db.users.count_documents({"role": "admin"}) > 0
+    return {
+        "ok": True,
+        "admin_exists": admin_exists
+    }
 @api_router.post("/auth/login")
 async def login(body: UserLoginPhone):
     phone = normalize_phone(body.phone)
@@ -480,7 +514,32 @@ async def reset_password(uid: str, current_user: dict = Depends(require_admin)):
         "must_change_password": True,
     }})
     return {"ok": True, "temp_password": temp, "phone": u["phone"], "full_name": u["full_name"]}
+@api_router.put("/vehicles/{vehicle_id}")
+async def update_vehicle(
+    vehicle_id: str,
+    body: VehicleUpdate,
+    current_user: dict = Depends(require_admin)
+):
+    result = await db.vehicles.update_one(
+        {"id": vehicle_id},
+        {
+            "$set": {
+                "plate_number": body.plate_number,
+                "model": body.model,
+                "year": body.year,
+                "color": body.color,
+                "location_id": body.location_id,
+                "driver_id": body.driver_id,
+                "status": body.status,
+                "photo": body.photo,
+            }
+        }
+    )
 
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="السيارة غير موجودة")
+
+    return {"ok": True}
 
 class UserPatch(BaseModel):
     role: Optional[str] = None
@@ -553,6 +612,210 @@ for _name, _model, _mc in [
     api_router.add_api_route(f"/{_name}/{{item_id}}", _delete, methods=["DELETE"])
 
 
+# ============ LEAVE NOTIFICATIONS ============
+def _parse_iso_date(value: str) -> date:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="صيغة التاريخ يجب أن تكون YYYY-MM-DD")
+
+
+def _leave_dates(start_date: str, end_date: str) -> tuple[date, date, int, date]:
+    start = _parse_iso_date(start_date)
+    end = _parse_iso_date(end_date)
+    if end < start:
+        raise HTTPException(status_code=400, detail="تاريخ نهاية الإجازة يجب ألا يسبق تاريخ بدايتها")
+    duration = (end - start).days + 1
+    return_date = end + timedelta(days=1)
+    return start, end, duration, return_date
+
+
+async def _employee_for_leave(employee_id: str) -> dict:
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=400, detail="الموظف غير موجود")
+    return employee
+
+
+async def _leave_balance(employee: dict, year: int, exclude_leave_id: Optional[str] = None) -> dict:
+    entitlement = int(employee.get("annual_leave_balance", 30) or 30)
+    used = 0
+    query = {
+        "employee_id": employee["id"],
+        "status": "approved",
+        "leave_type": "سنوية",
+    }
+    if exclude_leave_id:
+        query["id"] = {"$ne": exclude_leave_id}
+    async for leave in db.leaves.find(query, {"_id": 0}):
+        try:
+            start, end, duration, _ = _leave_dates(leave["start_date"], leave["end_date"])
+        except HTTPException:
+            continue
+        if start.year == year:
+            used += int(leave.get("duration_days") or duration)
+    return {
+        "annual_balance": entitlement,
+        "used_days": used,
+        "remaining_balance": max(entitlement - used, 0),
+    }
+
+
+async def _create_employee_notification(
+    employee: dict,
+    leave: dict,
+    notification_type: str,
+    title: str,
+    message: str,
+) -> bool:
+    dedupe_key = f"leave:{leave['id']}:{notification_type}"
+    if await db.notifications.find_one({"dedupe_key": dedupe_key}):
+        return False
+    phone = normalize_phone(employee.get("phone", ""))
+    user = await db.users.find_one({"phone": phone}, {"_id": 0, "id": 1}) if phone else None
+    await db.notifications.insert_one({
+        "id": str(uuid.uuid4()),
+        "dedupe_key": dedupe_key,
+        "type": notification_type,
+        "title": title,
+        "message": message,
+        "employee_id": employee["id"],
+        "user_id": user.get("id") if user else None,
+        "leave_id": leave["id"],
+        "phone": phone,
+        "is_read": False,
+        "created_at": now_iso(),
+    })
+    return True
+
+
+async def _build_leave_details(leave: dict, employee: Optional[dict] = None) -> dict:
+    employee = employee or await _employee_for_leave(leave["employee_id"])
+    start, end, duration, return_date = _leave_dates(leave["start_date"], leave["end_date"])
+    today = datetime.now(timezone.utc).date()
+    remaining_in_leave = max((end - today).days + 1, 0) if today <= end else 0
+    balance = await _leave_balance(employee, start.year, exclude_leave_id=leave.get("id"))
+    used_with_current = balance["used_days"] + (duration if leave.get("status") == "approved" and leave.get("leave_type") == "سنوية" else 0)
+    remaining_balance = max(balance["annual_balance"] - used_with_current, 0)
+    return {
+        **leave,
+        "employee_name": employee.get("name", ""),
+        "employee_phone": normalize_phone(employee.get("phone", "")),
+        "duration_days": duration,
+        "return_date": return_date.isoformat(),
+        "remaining_days": remaining_in_leave,
+        "annual_balance": balance["annual_balance"],
+        "used_days": used_with_current,
+        "remaining_balance": remaining_balance,
+    }
+
+
+def _leave_whatsapp_payload(employee: dict, details: dict) -> dict:
+    phone = normalize_phone(employee.get("phone", ""))
+    if not phone:
+        return {
+            "whatsapp_phone": None,
+            "whatsapp_message": None,
+            "whatsapp_url": None,
+        }
+
+    message = (
+        f"السلام عليكم {employee.get('name', '')}\n"
+        f"تم اعتماد إجازتك.\n\n"
+        f"• نوع الإجازة: {details.get('leave_type', 'سنوية')}\n"
+        f"• بداية الإجازة: {details['start_date']}\n"
+        f"• نهاية الإجازة: {details['end_date']}\n"
+        f"• مدة الإجازة: {details['duration_days']} يومًا\n"
+        f"• تاريخ العودة للعمل: {details['return_date']}\n"
+        f"• رصيد الإجازة السنوية المتبقي: {details['remaining_balance']} يومًا"
+    )
+    return {
+        "whatsapp_phone": phone,
+        "whatsapp_message": message,
+        "whatsapp_url": f"https://wa.me/{phone}?text={quote(message)}",
+    }
+
+
+async def _leave_with_whatsapp(leave: dict) -> dict:
+    employee = await _employee_for_leave(leave["employee_id"])
+    details = await _build_leave_details(leave, employee)
+    return {
+        **leave,
+        **_leave_whatsapp_payload(employee, details),
+    }
+
+
+async def _send_approval_notification(leave: dict) -> None:
+    if leave.get("status") != "approved":
+        return
+    employee = await _employee_for_leave(leave["employee_id"])
+    details = await _build_leave_details(leave, employee)
+    message = (
+        f"تم اعتماد إجازتك من {details['start_date']} إلى {details['end_date']}. "
+        f"مدة الإجازة {details['duration_days']} يومًا، وتاريخ العودة {details['return_date']}. "
+        f"رصيدك السنوي المتبقي {details['remaining_balance']} يومًا."
+    )
+    created = await _create_employee_notification(employee, leave, "leave_approved", "تم اعتماد إجازتك", message)
+    if created:
+        await db.leaves.update_one({"id": leave["id"]}, {"$set": {"approval_notification_sent": True}})
+
+
+async def process_leave_notifications() -> dict:
+    today = datetime.now(timezone.utc).date()
+    processed = 0
+    created = 0
+    async for leave in db.leaves.find({"status": "approved"}, {"_id": 0}):
+        processed += 1
+        employee = await db.employees.find_one({"id": leave.get("employee_id")}, {"_id": 0})
+        if not employee:
+            continue
+        try:
+            details = await _build_leave_details(leave, employee)
+            start = _parse_iso_date(details["start_date"])
+            end = _parse_iso_date(details["end_date"])
+            return_date = _parse_iso_date(details["return_date"])
+        except HTTPException:
+            continue
+
+        if today == start:
+            message = (
+                f"بدأت إجازتك اليوم. مدتها {details['duration_days']} يومًا، "
+                f"وتنتهي في {details['end_date']}. المتبقي حتى نهايتها {details['remaining_days']} يومًا."
+            )
+            if await _create_employee_notification(employee, leave, "leave_started", "بدأت إجازتك اليوم", message):
+                created += 1
+                await db.leaves.update_one({"id": leave["id"]}, {"$set": {"start_notification_sent": True}})
+
+        if today == end:
+            message = (
+                f"تنتهي إجازتك اليوم. مدة الإجازة {details['duration_days']} يومًا، "
+                f"وموعد العودة للعمل {details['return_date']}."
+            )
+            if await _create_employee_notification(employee, leave, "leave_ended", "تنتهي إجازتك اليوم", message):
+                created += 1
+                await db.leaves.update_one({"id": leave["id"]}, {"$set": {"end_notification_sent": True}})
+
+        if today == return_date:
+            message = (
+                f"انتهت إجازتك وموعد عودتك للعمل اليوم. "
+                f"رصيد الإجازات السنوية المتبقي {details['remaining_balance']} يومًا."
+            )
+            if await _create_employee_notification(employee, leave, "leave_return", "موعد العودة للعمل", message):
+                created += 1
+                await db.leaves.update_one({"id": leave["id"]}, {"$set": {"return_notification_sent": True}})
+
+    return {"processed": processed, "notifications_created": created, "date": today.isoformat()}
+
+
+async def _leave_notification_worker():
+    while True:
+        try:
+            await process_leave_notifications()
+        except Exception:
+            logger.exception("Leave notification worker failed")
+        await asyncio.sleep(3600)
+
+
 # ============ LEAVES with conflict check ============
 @api_router.get("/leaves", response_model=List[Leave])
 async def list_leaves(current_user: dict = Depends(get_current_user)):
@@ -585,26 +848,127 @@ async def _check_leave_conflict(employee_id: str, start_date: str, end_date: str
 
 @api_router.post("/leaves", response_model=Leave)
 async def create_leave(body: LeaveCreate, current_user: dict = Depends(require_admin)):
+    start, end, duration, return_date = _leave_dates(body.start_date, body.end_date)
+    employee = await _employee_for_leave(body.employee_id)
     if body.status == "approved":
         await _check_leave_conflict(body.employee_id, body.start_date, body.end_date)
-    lv = Leave(**body.dict())
+        balance = await _leave_balance(employee, start.year)
+        if body.leave_type == "سنوية" and duration > balance["remaining_balance"]:
+            raise HTTPException(status_code=400, detail=f"رصيد الإجازة غير كافٍ. المتبقي {balance['remaining_balance']} يومًا")
+    lv = Leave(**body.dict(), duration_days=duration, return_date=return_date.isoformat())
     await db.leaves.insert_one(lv.dict())
-    return lv
+    if lv.status == "approved":
+        await _send_approval_notification(lv.dict())
+    saved_leave = await db.leaves.find_one({"id": lv.id}, {"_id": 0})
+    if saved_leave.get("status") == "approved":
+        return await _leave_with_whatsapp(saved_leave)
+    return saved_leave
 
 @api_router.put("/leaves/{lv_id}", response_model=Leave)
 async def update_leave(lv_id: str, body: LeaveCreate, current_user: dict = Depends(require_admin)):
+    existing = await db.leaves.find_one({"id": lv_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "غير موجود")
+    start, end, duration, return_date = _leave_dates(body.start_date, body.end_date)
+    employee = await _employee_for_leave(body.employee_id)
     if body.status == "approved":
         await _check_leave_conflict(body.employee_id, body.start_date, body.end_date, exclude_id=lv_id)
-    await db.leaves.update_one({"id": lv_id}, {"$set": body.dict()})
+        balance = await _leave_balance(employee, start.year, exclude_leave_id=lv_id)
+        if body.leave_type == "سنوية" and duration > balance["remaining_balance"]:
+            raise HTTPException(status_code=400, detail=f"رصيد الإجازة غير كافٍ. المتبقي {balance['remaining_balance']} يومًا")
+    update = {
+        **body.dict(),
+        "duration_days": duration,
+        "return_date": return_date.isoformat(),
+    }
+    if existing.get("status") != "approved" and body.status == "approved":
+        update["approval_notification_sent"] = False
+    await db.leaves.update_one({"id": lv_id}, {"$set": update})
     doc = await db.leaves.find_one({"id": lv_id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(404, "غير موجود")
-    return doc
+    if body.status == "approved":
+        await _send_approval_notification(doc)
+    saved_leave = await db.leaves.find_one({"id": lv_id}, {"_id": 0})
+    if saved_leave.get("status") == "approved":
+        return await _leave_with_whatsapp(saved_leave)
+    return saved_leave
 
 @api_router.delete("/leaves/{lv_id}")
 async def delete_leave(lv_id: str, current_user: dict = Depends(require_admin)):
     await db.leaves.delete_one({"id": lv_id})
+    await db.notifications.delete_many({"leave_id": lv_id})
     return {"ok": True}
+
+
+@api_router.get("/leaves/my-status")
+async def my_leave_status(current_user: dict = Depends(get_current_user)):
+    phone = normalize_phone(current_user.get("phone", ""))
+    employee = await db.employees.find_one({"phone": {"$in": [phone, current_user.get("phone", "")] }}, {"_id": 0})
+    if not employee:
+        # Fallback for employee records stored in local Saudi format.
+        async for candidate in db.employees.find({}, {"_id": 0}):
+            if normalize_phone(candidate.get("phone", "")) == phone:
+                employee = candidate
+                break
+    if not employee:
+        raise HTTPException(status_code=404, detail="لم يتم ربط حسابك بسجل موظف يحمل رقم الجوال نفسه")
+    leaves = await db.leaves.find({"employee_id": employee["id"]}, {"_id": 0}).sort("start_date", -1).to_list(200)
+    enriched = [await _build_leave_details(leave, employee) for leave in leaves]
+    today = datetime.now(timezone.utc).date().isoformat()
+    current = next((leave for leave in enriched if leave.get("status") == "approved" and leave["start_date"] <= today <= leave["end_date"]), None)
+    upcoming = next((leave for leave in sorted(enriched, key=lambda x: x["start_date"]) if leave.get("status") == "approved" and leave["start_date"] > today), None)
+    return {"employee": employee, "current_leave": current, "upcoming_leave": upcoming, "leaves": enriched}
+
+
+@api_router.get("/notifications/my")
+async def my_notifications(current_user: dict = Depends(get_current_user)):
+    phone = normalize_phone(current_user.get("phone", ""))
+    query = {"$or": [{"user_id": current_user["id"]}, {"phone": phone}]}
+    return await db.notifications.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+
+@api_router.put("/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: str, current_user: dict = Depends(get_current_user)):
+    phone = normalize_phone(current_user.get("phone", ""))
+    result = await db.notifications.update_one(
+        {"id": notification_id, "$or": [{"user_id": current_user["id"]}, {"phone": phone}]},
+        {"$set": {"is_read": True, "read_at": now_iso()}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="الإشعار غير موجود")
+    return {"ok": True}
+
+
+@api_router.post("/notifications/process-leaves")
+async def process_leave_notifications_now(current_user: dict = Depends(require_admin)):
+    return await process_leave_notifications()
+
+
+@api_router.get("/leaves/{lv_id}/notify-info")
+async def leave_notify_info(lv_id: str, current_user: dict = Depends(get_current_user)):
+    leave = await db.leaves.find_one({"id": lv_id}, {"_id": 0})
+    if not leave:
+        raise HTTPException(status_code=404, detail="الإجازة غير موجودة")
+    employee = await _employee_for_leave(leave["employee_id"])
+    if not employee.get("phone"):
+        raise HTTPException(status_code=400, detail="لا يوجد رقم جوال للموظف")
+    details = await _build_leave_details(leave, employee)
+    message = (
+        f"السلام عليكم {employee['name']}\n"
+        f"تم اعتماد إجازتك.\n\n"
+        f"• بداية الإجازة: {details['start_date']}\n"
+        f"• نهاية الإجازة: {details['end_date']}\n"
+        f"• مدة الإجازة: {details['duration_days']} يومًا\n"
+        f"• تاريخ العودة: {details['return_date']}\n"
+        f"• المتبقي حتى نهاية الإجازة: {details['remaining_days']} يومًا\n"
+        f"• رصيد الإجازة السنوية المتبقي: {details['remaining_balance']} يومًا"
+    )
+    phone = normalize_phone(employee["phone"])
+    return {
+        "phone": phone,
+        "message": message,
+        "whatsapp_url": f"https://wa.me/{phone}?text={quote(message)}",
+        "leave": details,
+    }
 
 
 # ============ STATS ============
@@ -642,9 +1006,34 @@ async def dashboard_stats(current_user: dict = Depends(get_current_user)):
         unpaid_amount += v.get("amount", 0)
 
     active_leaves = 0
-    async for lv in db.leaves.find({"status": "approved"}, {"_id": 0, "start_date": 1, "end_date": 1}):
-        if lv["start_date"] <= today <= lv["end_date"]:
+    upcoming_leaves = 0
+    ending_soon_leaves = 0
+    approved_leaves_year = 0
+    leave_days_year = 0
+    today_date = datetime.now(timezone.utc).date()
+    next_7_days = (today_date + timedelta(days=7)).isoformat()
+    year_prefix = str(today_date.year)
+
+    async for lv in db.leaves.find({"status": "approved"}, {"_id": 0}):
+        start_date = lv.get("start_date", "")
+        end_date = lv.get("end_date", "")
+
+        if start_date <= today <= end_date:
             active_leaves += 1
+
+        if today < start_date <= next_7_days:
+            upcoming_leaves += 1
+
+        if today <= end_date <= next_7_days:
+            ending_soon_leaves += 1
+
+        if start_date.startswith(year_prefix):
+            approved_leaves_year += 1
+            try:
+                _, _, duration, _ = _leave_dates(start_date, end_date)
+                leave_days_year += int(lv.get("duration_days") or duration)
+            except (ValueError, TypeError):
+                pass
 
     upcoming_maint = 0
     thirty = (datetime.now(timezone.utc) + timedelta(days=30)).date().isoformat()
@@ -652,7 +1041,6 @@ async def dashboard_stats(current_user: dict = Depends(get_current_user)):
         if m.get("next_due_date") and today <= m["next_due_date"] <= thirty:
             upcoming_maint += 1
 
-    year_prefix = str(datetime.now(timezone.utc).year)
     maint_cost = 0
     async for m in db.maintenance.find({}, {"_id": 0, "date": 1, "cost": 1}):
         if m.get("date", "").startswith(year_prefix):
@@ -674,7 +1062,12 @@ async def dashboard_stats(current_user: dict = Depends(get_current_user)):
         "total_vehicles": total_vehicles, "active_vehicles": active_vehicles, "in_maintenance": in_maintenance,
         "total_employees": total_employees, "total_locations": total_locations,
         "unpaid_violations": unpaid_violations, "unpaid_amount": unpaid_amount,
-        "active_leaves": active_leaves, "upcoming_maintenance": upcoming_maint,
+        "active_leaves": active_leaves,
+        "upcoming_leaves": upcoming_leaves,
+        "ending_soon_leaves": ending_soon_leaves,
+        "approved_leaves_year": approved_leaves_year,
+        "leave_days_year": leave_days_year,
+        "upcoming_maintenance": upcoming_maint,
         "maintenance_cost_year": maint_cost, "open_accidents": open_accidents,
         "pending_users": pending_users, "fuel_cost_year": fuel_cost,
         "fuel_count_year": fuel_count, "accident_cost_year": accident_cost,
@@ -693,6 +1086,342 @@ async def _monthly_agg(coll: str, amount_field: str = "cost"):
                 count += 1
         result.append({"label": AR_MONTHS[m], "count": count, "amount": round(total, 2)})
     return result
+
+
+@api_router.get("/stats/leaves-summary")
+async def leaves_summary(
+    year: Optional[int] = None,
+    location_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """ملخص شامل لإحصائيات الإجازات حسب السنة والمقر."""
+    selected_year = year or datetime.now(timezone.utc).year
+    year_start = f"{selected_year:04d}-01-01"
+    year_end = f"{selected_year:04d}-12-31"
+    today = datetime.now(timezone.utc).date().isoformat()
+    next_7_days = (datetime.now(timezone.utc).date() + timedelta(days=7)).isoformat()
+
+    employees = await db.employees.find({}, {"_id": 0}).to_list(5000)
+    employee_map = {employee["id"]: employee for employee in employees}
+
+    total = 0
+    approved = 0
+    pending = 0
+    rejected = 0
+    active = 0
+    upcoming = 0
+    ending_soon = 0
+    total_days = 0
+    annual_days = 0
+    sick_days = 0
+    other_days = 0
+    employee_ids = set()
+
+    async for leave in db.leaves.find({}, {"_id": 0}):
+        employee = employee_map.get(leave.get("employee_id"))
+        if not employee:
+            continue
+        if location_id and employee.get("location_id") != location_id:
+            continue
+
+        start_date = leave.get("start_date", "")
+        end_date = leave.get("end_date", "")
+        if not start_date or not end_date:
+            continue
+
+        # Include leaves that overlap the selected year.
+        if end_date < year_start or start_date > year_end:
+            continue
+
+        total += 1
+        status = leave.get("status", "approved")
+        if status == "approved":
+            approved += 1
+        elif status == "pending":
+            pending += 1
+        elif status == "rejected":
+            rejected += 1
+
+        if status == "approved":
+            if start_date <= today <= end_date:
+                active += 1
+            if today < start_date <= next_7_days:
+                upcoming += 1
+            if today <= end_date <= next_7_days:
+                ending_soon += 1
+
+            try:
+                start_obj, end_obj, _, _ = _leave_dates(start_date, end_date)
+                overlap_start = max(start_obj, date(selected_year, 1, 1))
+                overlap_end = min(end_obj, date(selected_year, 12, 31))
+                duration = max((overlap_end - overlap_start).days + 1, 0)
+            except ValueError:
+                duration = int(leave.get("duration_days") or 0)
+
+            total_days += duration
+            employee_ids.add(leave.get("employee_id"))
+            leave_type = leave.get("leave_type", "سنوية")
+            if leave_type == "سنوية":
+                annual_days += duration
+            elif leave_type in ("مرضية", "مرضي"):
+                sick_days += duration
+            else:
+                other_days += duration
+
+    return {
+        "year": selected_year,
+        "location_id": location_id,
+        "total_leaves": total,
+        "approved_leaves": approved,
+        "pending_leaves": pending,
+        "rejected_leaves": rejected,
+        "active_leaves": active,
+        "upcoming_7_days": upcoming,
+        "ending_7_days": ending_soon,
+        "employees_with_leave": len(employee_ids),
+        "total_leave_days": total_days,
+        "annual_leave_days": annual_days,
+        "sick_leave_days": sick_days,
+        "other_leave_days": other_days,
+    }
+
+
+@api_router.get("/stats/leaves-monthly")
+async def leaves_monthly(
+    year: Optional[int] = None,
+    location_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """عدد الإجازات وأيامها لكل شهر."""
+    selected_year = year or datetime.now(timezone.utc).year
+    employees = await db.employees.find({}, {"_id": 0}).to_list(5000)
+    employee_map = {employee["id"]: employee for employee in employees}
+
+    result = []
+    for month in range(1, 13):
+        month_start = date(selected_year, month, 1)
+        if month == 12:
+            month_end = date(selected_year, 12, 31)
+        else:
+            month_end = date(selected_year, month + 1, 1) - timedelta(days=1)
+
+        count = 0
+        days = 0
+        employees_set = set()
+
+        async for leave in db.leaves.find({"status": "approved"}, {"_id": 0}):
+            employee = employee_map.get(leave.get("employee_id"))
+            if not employee:
+                continue
+            if location_id and employee.get("location_id") != location_id:
+                continue
+
+            try:
+                start_obj, end_obj, _, _ = _leave_dates(leave["start_date"], leave["end_date"])
+            except (ValueError, KeyError):
+                continue
+
+            overlap_start = max(start_obj, month_start)
+            overlap_end = min(end_obj, month_end)
+            if overlap_start <= overlap_end:
+                count += 1
+                days += (overlap_end - overlap_start).days + 1
+                employees_set.add(leave.get("employee_id"))
+
+        result.append({
+            "month": month,
+            "label": AR_MONTHS[month],
+            "count": count,
+            "days": days,
+            "employees": len(employees_set),
+        })
+
+    return result
+
+
+@api_router.get("/stats/leaves-by-type")
+async def leaves_by_type(
+    year: Optional[int] = None,
+    location_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """توزيع الإجازات حسب النوع."""
+    selected_year = year or datetime.now(timezone.utc).year
+    year_start = f"{selected_year:04d}-01-01"
+    year_end = f"{selected_year:04d}-12-31"
+    employees = await db.employees.find({}, {"_id": 0}).to_list(5000)
+    employee_map = {employee["id"]: employee for employee in employees}
+    totals = {}
+
+    async for leave in db.leaves.find({"status": "approved"}, {"_id": 0}):
+        employee = employee_map.get(leave.get("employee_id"))
+        if not employee:
+            continue
+        if location_id and employee.get("location_id") != location_id:
+            continue
+        if leave.get("end_date", "") < year_start or leave.get("start_date", "") > year_end:
+            continue
+
+        leave_type = leave.get("leave_type") or "غير محددة"
+        try:
+            start_obj, end_obj, _, _ = _leave_dates(leave["start_date"], leave["end_date"])
+            overlap_start = max(start_obj, date(selected_year, 1, 1))
+            overlap_end = min(end_obj, date(selected_year, 12, 31))
+            duration = max((overlap_end - overlap_start).days + 1, 0)
+        except (ValueError, KeyError):
+            duration = int(leave.get("duration_days") or 0)
+
+        if leave_type not in totals:
+            totals[leave_type] = {"leave_type": leave_type, "count": 0, "days": 0}
+        totals[leave_type]["count"] += 1
+        totals[leave_type]["days"] += duration
+
+    return sorted(totals.values(), key=lambda item: item["days"], reverse=True)
+
+
+@api_router.get("/stats/leaves-by-location")
+async def leaves_by_location(
+    year: Optional[int] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """توزيع الإجازات حسب المقر."""
+    selected_year = year or datetime.now(timezone.utc).year
+    year_start = f"{selected_year:04d}-01-01"
+    year_end = f"{selected_year:04d}-12-31"
+
+    employees = await db.employees.find({}, {"_id": 0}).to_list(5000)
+    employee_map = {employee["id"]: employee for employee in employees}
+    locations = await db.locations.find({}, {"_id": 0}).to_list(1000)
+    location_map = {location["id"]: location for location in locations}
+    totals = {}
+
+    async for leave in db.leaves.find({"status": "approved"}, {"_id": 0}):
+        if leave.get("end_date", "") < year_start or leave.get("start_date", "") > year_end:
+            continue
+        employee = employee_map.get(leave.get("employee_id"))
+        if not employee:
+            continue
+
+        location_id = employee.get("location_id") or "none"
+        location_name = location_map.get(location_id, {}).get("name", "غير محدد")
+        try:
+            start_obj, end_obj, _, _ = _leave_dates(leave["start_date"], leave["end_date"])
+            overlap_start = max(start_obj, date(selected_year, 1, 1))
+            overlap_end = min(end_obj, date(selected_year, 12, 31))
+            duration = max((overlap_end - overlap_start).days + 1, 0)
+        except (ValueError, KeyError):
+            duration = int(leave.get("duration_days") or 0)
+
+        if location_id not in totals:
+            totals[location_id] = {
+                "location_id": None if location_id == "none" else location_id,
+                "location_name": location_name,
+                "count": 0,
+                "days": 0,
+                "employees": set(),
+            }
+
+        totals[location_id]["count"] += 1
+        totals[location_id]["days"] += duration
+        totals[location_id]["employees"].add(leave.get("employee_id"))
+
+    result = []
+    for item in totals.values():
+        result.append({
+            "location_id": item["location_id"],
+            "location_name": item["location_name"],
+            "count": item["count"],
+            "days": item["days"],
+            "employees": len(item["employees"]),
+        })
+    return sorted(result, key=lambda item: item["days"], reverse=True)
+
+
+@api_router.get("/reports/leaves")
+async def leaves_report(
+    start_date: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    end_date: Optional[str] = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    status: Optional[str] = None,
+    leave_type: Optional[str] = None,
+    location_id: Optional[str] = None,
+    employee_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """تقرير تفصيلي للإجازات مع فلاتر التاريخ والحالة والنوع والمقر والموظف."""
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(status_code=400, detail="تاريخ البداية يجب أن يسبق تاريخ النهاية")
+
+    employees = await db.employees.find({}, {"_id": 0}).to_list(5000)
+    employee_map = {employee["id"]: employee for employee in employees}
+    locations = await db.locations.find({}, {"_id": 0}).to_list(1000)
+    location_map = {location["id"]: location for location in locations}
+
+    query = {}
+    if status:
+        query["status"] = status
+    if leave_type:
+        query["leave_type"] = leave_type
+    if employee_id:
+        query["employee_id"] = employee_id
+
+    rows = []
+    total_days = 0
+    async for leave in db.leaves.find(query, {"_id": 0}).sort("start_date", -1):
+        employee = employee_map.get(leave.get("employee_id"))
+        if not employee:
+            continue
+        if location_id and employee.get("location_id") != location_id:
+            continue
+
+        leave_start = leave.get("start_date", "")
+        leave_end = leave.get("end_date", "")
+        if start_date and leave_end < start_date:
+            continue
+        if end_date and leave_start > end_date:
+            continue
+
+        try:
+            _, _, duration, return_date = _leave_dates(leave_start, leave_end)
+        except ValueError:
+            duration = int(leave.get("duration_days") or 0)
+            return_date = None
+
+        total_days += duration
+        location = location_map.get(employee.get("location_id"), {})
+        rows.append({
+            "leave_id": leave.get("id"),
+            "employee_id": employee.get("id"),
+            "employee_name": employee.get("name"),
+            "employee_number": employee.get("employee_number", ""),
+            "position": employee.get("position", ""),
+            "group": employee.get("group", "none"),
+            "location_id": employee.get("location_id"),
+            "location_name": location.get("name", "غير محدد"),
+            "leave_type": leave.get("leave_type", "سنوية"),
+            "start_date": leave_start,
+            "end_date": leave_end,
+            "duration_days": duration,
+            "return_date": leave.get("return_date") or (return_date.isoformat() if return_date else None),
+            "status": leave.get("status", "approved"),
+            "reason": leave.get("reason", ""),
+        })
+
+    return {
+        "filters": {
+            "start_date": start_date,
+            "end_date": end_date,
+            "status": status,
+            "leave_type": leave_type,
+            "location_id": location_id,
+            "employee_id": employee_id,
+        },
+        "summary": {
+            "records": len(rows),
+            "total_days": total_days,
+        },
+        "items": rows,
+    }
+
 
 @api_router.get("/stats/violations-monthly")
 async def violations_monthly(current_user: dict = Depends(get_current_user)):
@@ -936,9 +1665,13 @@ async def notify_message(body: ApproveNotifyReq, current_user: dict = Depends(re
 async def _on_startup():
     if await db.locations.count_documents({}) == 0 and await db.users.count_documents({}) > 0:
         await ensure_real_locations()
+    app.state.leave_notification_task = asyncio.create_task(_leave_notification_worker())
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    task = getattr(app.state, "leave_notification_task", None)
+    if task:
+        task.cancel()
     client.close()
 
 
