@@ -1673,6 +1673,14 @@ async def shutdown_db_client():
             pass
     client.close()
 
+@app.get("/")
+async def root():
+    return {
+        "ok": True,
+        "message": "خادم تطبيق أمن المقرات يعمل بنجاح",
+        "docs": "/docs",
+        "status": "/api/auth/status"
+    }
 
 app.include_router(api_router)
 
