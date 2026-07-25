@@ -34,8 +34,8 @@ export default function DashboardScreen() {
       Promise.all([api.maintenance.list(), api.leaves.list(), api.vehicles.list(), api.employees.list()])
         .then(([maintenance, leaves, vehicles, employees]) =>
           syncReminders({ maintenance, leaves, vehicles, employees })
-        ).catch(() => {});
-    } catch {}
+        ).catch(() => { });
+    } catch { }
     setLoading(false); setRefreshing(false);
   }, []);
 
@@ -83,9 +83,9 @@ export default function DashboardScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={{ color: "rgba(255,255,255,0.75)", fontSize: 11 }}>مناوبة اليوم — {todaySchedule.date}</Text>
                 <View style={{ flexDirection: "row-reverse", gap: 12, marginTop: 6 }}>
-                  <View><Text style={styles.shiftLbl}>نهار (06-18)</Text><Text style={styles.shiftVal}>مجموعة {todaySchedule.day_shift.group}</Text></View>
+                  <View><Text style={styles.shiftLbl}> (06-18)</Text><Text style={styles.shiftVal}>مجموعة {todaySchedule.day_shift.group}</Text></View>
                   <View style={{ width: 1, backgroundColor: "rgba(255,255,255,0.25)" }} />
-                  <View><Text style={styles.shiftLbl}>ليل (18-06)</Text><Text style={styles.shiftVal}>مجموعة {todaySchedule.night_shift.group}</Text></View>
+                  <View><Text style={styles.shiftLbl}> (18-06)</Text><Text style={styles.shiftVal}>مجموعة {todaySchedule.night_shift.group}</Text></View>
                 </View>
               </View>
               <Pressable testID="view-schedule-btn" onPress={() => router.push("/schedule")}>

@@ -27,7 +27,7 @@ export default function ScheduleScreen() {
       try {
         const [d, e] = await Promise.all([api.scheduleWeek(), api.employees.list()]);
         setDays(d); setEmployees(e);
-      } catch {}
+      } catch { }
       setLoading(false);
     })();
   }, []);
@@ -99,10 +99,10 @@ export default function ScheduleScreen() {
           })}
 
           <View style={styles.legend}>
-            <Text style={styles.legendTitle}>ملاحظات:</Text>
-            <Text style={styles.legendText}>• كل مجموعة تعمل 4 أيام متتالية ثم تستريح 4 أيام</Text>
-            <Text style={styles.legendText}>• AB معاً 4 أيام (A نهار، B ليل)، ثم CD 4 أيام (C نهار، D ليل)</Text>
-            <Text style={styles.legendText}>• الدورة تتكرر بشكل ثابت على مدار السنة</Text>
+            <Text style={styles.legendTitle}></Text>
+            <Text style={styles.legendText}> </Text>
+            <Text style={styles.legendText}> </Text>
+            <Text style={styles.legendText}>  </Text>
           </View>
         </ScrollView>
       )}

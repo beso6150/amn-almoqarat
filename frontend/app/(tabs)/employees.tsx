@@ -13,7 +13,7 @@ import { useAuth } from "@/src/auth";
 type Tab = "employees" | "locations" | "leaves" | "maintenance" | "fuel" | "accidents" | "violations";
 
 const POSITIONS = [{ v: "رجل أمن", l: "رجل أمن" }, { v: "مشرف أمن", l: "مشرف أمن" }, { v: "مدير عمليات", l: "مدير عمليات" }];
-const GROUPS = [{ v: "none", l: "بدون" }, { v: "A", l: "A (نهار)" }, { v: "B", l: "B (ليل)" }, { v: "C", l: "C (نهار)" }, { v: "D", l: "D (ليل)" }];
+const GROUPS = [{ v: "none", l: "بدون" }, { v: "A", l: " A " }, { v: "B", l: " B " }, { v: "C", l: " C " }, { v: "D", l: " D " }];
 
 const DEFAULT_ANNUAL_LEAVE_BALANCE = 30;
 const DAY_IN_MILLISECONDS = 86400000;
