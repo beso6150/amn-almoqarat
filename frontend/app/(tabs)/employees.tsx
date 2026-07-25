@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from "react";
-import { View, Text, StyleSheet, FlatList, Pressable, TextInput, ActivityIndicator, Alert, Image as ExpoImage, ScrollView } from "react-native";
+import { View, Text, StyleSheet, FlatList, Pressable, TextInput, ActivityIndicator, Alert, Image as ExpoImage, ScrollView, Platform } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
@@ -14,6 +14,26 @@ type Tab = "employees" | "locations" | "leaves" | "maintenance" | "fuel" | "acci
 
 const POSITIONS = [{ v: "رجل أمن", l: "رجل أمن" }, { v: "مشرف أمن", l: "مشرف أمن" }, { v: "مدير عمليات", l: "مدير عمليات" }];
 const GROUPS = [{ v: "none", l: "بدون" }, { v: "A", l: "A (نهار)" }, { v: "B", l: "B (ليل)" }, { v: "C", l: "C (نهار)" }, { v: "D", l: "D (ليل)" }];
+
+const DEFAULT_ANNUAL_LEAVE_BALANCE = 30;
+const DAY_IN_MILLISECONDS = 86400000;
+
+const getLeaveDays = (startDate?: string, endDate?: string) => {
+  if (!startDate || !endDate) return 0;
+
+  const start = new Date(`${startDate}T00:00:00`);
+  const end = new Date(`${endDate}T00:00:00`);
+
+  if (
+    Number.isNaN(start.getTime()) ||
+    Number.isNaN(end.getTime()) ||
+    end.getTime() < start.getTime()
+  ) {
+    return 0;
+  }
+
+  return Math.floor((end.getTime() - start.getTime()) / DAY_IN_MILLISECONDS) + 1;
+};
 
 export default function ManagementScreen() {
   const { isAdmin } = useAuth();
@@ -32,6 +52,7 @@ export default function ManagementScreen() {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [form, setForm] = useState<any>({});
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -49,13 +70,69 @@ export default function ManagementScreen() {
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const today = new Date().toISOString().slice(0, 10);
-  const in30 = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+  const currentYear = new Date().getFullYear();
+  const in30 = new Date(Date.now() + 30 * DAY_IN_MILLISECONDS).toISOString().slice(0, 10);
+
+  const calculateLeaveBalance = (employeeId: string, excludedLeaveId?: string) => {
+    const employee = employees.find((item) => item.id === employeeId);
+    const annual =
+      Number(employee?.annual_leave_balance) || DEFAULT_ANNUAL_LEAVE_BALANCE;
+
+    const manuallyUsed = Math.max(
+      Number(employee?.leave_used_days) || 0,
+      0
+    );
+
+    const approvedLeaveDays = leaves
+      .filter((leave) => {
+        if (leave.id === excludedLeaveId) return false;
+        if (leave.employee_id !== employeeId) return false;
+        if (leave.status !== "approved") return false;
+
+        const leaveYear = Number(String(leave.start_date || "").slice(0, 4));
+        return leaveYear === currentYear;
+      })
+      .reduce(
+        (total, leave) =>
+          total + getLeaveDays(leave.start_date, leave.end_date),
+        0
+      );
+
+    const used = manuallyUsed + approvedLeaveDays;
+
+    return {
+      annual,
+      manuallyUsed,
+      approvedLeaveDays,
+      used,
+      remaining: Math.max(annual - used, 0),
+    };
+  };
+
+  const selectedEmployeeLeaveBalance = form.employee_id
+    ? calculateLeaveBalance(form.employee_id, editing?.id)
+    : null;
+
+  const requestedLeaveDays =
+    tab === "leaves"
+      ? getLeaveDays(form.start_date, form.end_date)
+      : 0;
 
   const openAdd = () => {
     if (!isAdmin) return;
     setEditing(null);
     if (tab === "locations") setForm({ name: "", address: "", region: "مكة", phone: "", manager: "" });
-    else if (tab === "employees") setForm({ name: "", employee_number: "", national_id: "", phone: "", position: "رجل أمن", group: "none", location_id: null });
+    else if (tab === "employees") setForm({
+      name: "",
+      employee_number: "",
+      national_id: "",
+      phone: "",
+      position: "رجل أمن",
+      group: "none",
+      location_id: null,
+      annual_leave_balance: DEFAULT_ANNUAL_LEAVE_BALANCE,
+      leave_used_days: 0,
+    });
     else if (tab === "leaves") setForm({ employee_id: null, leave_type: "سنوية", start_date: today, end_date: in30, reason: "", status: "approved" });
     else if (tab === "maintenance") setForm({ vehicle_id: null, employee_id: null, maintenance_type: "", description: "", cost: "", date: today, status: "completed", next_due_date: "" });
     else if (tab === "fuel") setForm({ vehicle_id: null, employee_id: null, date: today, cost: "", odometer_before: "", odometer_after: "", notes: "" });
@@ -71,6 +148,14 @@ export default function ManagementScreen() {
     else if (tab === "fuel") setForm({ ...it, cost: String(it.cost || 0), odometer_before: String(it.odometer_before || 0), odometer_after: String(it.odometer_after || 0) });
     else if (tab === "accidents") setForm({ ...it, fault_percentage: String(it.fault_percentage || 0), cost: String(it.cost || 0), photos: it.photos || [] });
     else if (tab === "violations") setForm({ ...it, amount: String(it.amount || 0) });
+    else if (tab === "employees") {
+      setForm({
+        ...it,
+        annual_leave_balance:
+          Number(it.annual_leave_balance) || DEFAULT_ANNUAL_LEAVE_BALANCE,
+        leave_used_days: Number(it.leave_used_days) || 0,
+      });
+    }
     else setForm({ ...it });
     setSheetOpen(true);
   };
@@ -82,16 +167,76 @@ export default function ManagementScreen() {
         if (editing) await api.locations.update(editing.id, form); else await api.locations.create(form);
       } else if (tab === "employees") {
         if (!form.name) return Alert.alert("خطأ", "الاسم مطلوب");
-        if (editing) await api.employees.update(editing.id, form); else await api.employees.create(form);
+
+        const annualLeaveBalance = Number(form.annual_leave_balance);
+        const leaveUsedDays = Number(form.leave_used_days);
+
+        if (
+          !Number.isFinite(annualLeaveBalance) ||
+          annualLeaveBalance < 0
+        ) {
+          return Alert.alert(
+            "خطأ",
+            "الرصيد السنوي يجب أن يكون رقمًا لا يقل عن صفر."
+          );
+        }
+
+        if (!Number.isFinite(leaveUsedDays) || leaveUsedDays < 0) {
+          return Alert.alert(
+            "خطأ",
+            "الرصيد المستخدم يجب أن يكون رقمًا لا يقل عن صفر."
+          );
+        }
+
+        if (leaveUsedDays > annualLeaveBalance) {
+          return Alert.alert(
+            "خطأ",
+            "الرصيد المستخدم سابقًا لا يمكن أن يكون أكبر من الرصيد السنوي."
+          );
+        }
+
+        const employeeBody = {
+          ...form,
+          annual_leave_balance: annualLeaveBalance,
+          leave_used_days: leaveUsedDays,
+        };
+
+        if (editing) {
+          await api.employees.update(editing.id, employeeBody);
+        } else {
+          await api.employees.create(employeeBody);
+        }
       } else if (tab === "leaves") {
         if (!form.employee_id) {
           return Alert.alert("خطأ", "يرجى اختيار موظف");
         }
 
+        const leaveDays = getLeaveDays(form.start_date, form.end_date);
+
+        if (leaveDays <= 0) {
+          return Alert.alert(
+            "خطأ",
+            "تأكد من صحة تاريخ البداية والنهاية، وأن تاريخ النهاية ليس قبل البداية."
+          );
+        }
+
+        const balance = calculateLeaveBalance(form.employee_id, editing?.id);
+        const selectedStatus = form.status || "approved";
+
+        if (
+          selectedStatus === "approved" &&
+          leaveDays > balance.remaining
+        ) {
+          return Alert.alert(
+            "الرصيد غير كافٍ",
+            `مدة الإجازة ${leaveDays} يوم، والمتبقي للموظف ${balance.remaining} يوم فقط خلال عام ${currentYear}.`
+          );
+        }
+
         const body = {
           ...form,
           leave_type: "سنوية",
-          status: form.status || "approved",
+          status: selectedStatus,
         };
 
         let savedLeave: any;
@@ -176,25 +321,117 @@ export default function ManagementScreen() {
     ]);
   };
 
+  const getDeleteItemName = (it: any) => {
+    if (tab === "locations") return it.name || "المقر";
+    if (tab === "employees") return it.name || "الموظف";
+
+    if (tab === "leaves") {
+      const employee = employees.find((e) => e.id === it.employee_id);
+      return employee?.name ? `إجازة الموظف ${employee.name}` : "الإجازة";
+    }
+
+    if (tab === "maintenance") return it.maintenance_type || "سجل الصيانة";
+
+    if (tab === "fuel") {
+      const vehicle = vehicles.find((v) => v.id === it.vehicle_id);
+      return vehicle?.plate_number
+        ? `تعبئة وقود السيارة ${vehicle.plate_number}`
+        : "سجل الوقود";
+    }
+
+    if (tab === "accidents") return it.description || "سجل الحادث";
+    if (tab === "violations") return it.violation_type || "المخالفة";
+    return "العنصر";
+  };
+
+  const showMessage = (title: string, message: string) => {
+    if (Platform.OS === "web") {
+      window.alert(`${title}\n\n${message}`);
+      return;
+    }
+
+    Alert.alert(title, message);
+  };
+
+  const executeDelete = async (it: any) => {
+    if (!it?.id || deletingId) return;
+
+    try {
+      setDeletingId(it.id);
+
+      if (tab === "locations") await api.locations.delete(it.id);
+      else if (tab === "employees") await api.employees.delete(it.id);
+      else if (tab === "leaves") await api.leaves.delete(it.id);
+      else if (tab === "maintenance") await api.maintenance.delete(it.id);
+      else if (tab === "fuel") await api.fuel.delete(it.id);
+      else if (tab === "accidents") await api.accidents.delete(it.id);
+      else if (tab === "violations") await api.violations.delete(it.id);
+
+      await load();
+      showMessage("تم", "تم حذف العنصر بنجاح");
+    } catch (e: any) {
+      console.error("تعذر حذف العنصر:", e);
+      showMessage(
+        "خطأ",
+        e?.response?.data?.detail ||
+        e?.response?.data?.message ||
+        e?.message ||
+        "تعذر حذف العنصر"
+      );
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   const remove = (it: any) => {
-    if (!isAdmin) return;
-    Alert.alert("تأكيد الحذف", "هل أنت متأكد؟", [
+    if (!isAdmin || !it || deletingId) return;
+
+    const itemName = getDeleteItemName(it);
+    const confirmationMessage = `هل تريد حذف ${itemName}؟\nلا يمكن التراجع عن عملية الحذف.`;
+
+    if (Platform.OS === "web") {
+      const confirmed = window.confirm(confirmationMessage);
+      if (confirmed) void executeDelete(it);
+      return;
+    }
+
+    Alert.alert("تأكيد الحذف", confirmationMessage, [
       { text: "إلغاء", style: "cancel" },
       {
-        text: "حذف", style: "destructive", onPress: async () => {
-          try {
-            if (tab === "locations") await api.locations.delete(it.id);
-            else if (tab === "employees") await api.employees.delete(it.id);
-            else if (tab === "leaves") await api.leaves.delete(it.id);
-            else if (tab === "maintenance") await api.maintenance.delete(it.id);
-            else if (tab === "fuel") await api.fuel.delete(it.id);
-            else if (tab === "accidents") await api.accidents.delete(it.id);
-            else if (tab === "violations") await api.violations.delete(it.id);
-            load();
-          } catch (e: any) { Alert.alert("خطأ", e.message); }
-        }
+        text: "حذف",
+        style: "destructive",
+        onPress: () => void executeDelete(it),
       },
     ]);
+  };
+
+  const DeleteButton = ({ item }: { item: any }) => {
+    if (!isAdmin) return null;
+
+    const isDeleting = deletingId === item.id;
+
+    return (
+      <Pressable
+        disabled={isDeleting}
+        onPress={(event: any) => {
+          event?.stopPropagation?.();
+          remove(item);
+        }}
+        style={[
+          styles.deleteActionButton,
+          isDeleting && styles.disabledAction,
+        ]}
+      >
+        {isDeleting ? (
+          <ActivityIndicator size="small" color={theme.colors.error} />
+        ) : (
+          <Ionicons name="trash-outline" size={17} color={theme.colors.error} />
+        )}
+        <Text style={styles.deleteActionText}>
+          {isDeleting ? "جارٍ الحذف" : "حذف"}
+        </Text>
+      </Pressable>
+    );
   };
 
   const tabs = [
@@ -237,6 +474,7 @@ export default function ManagementScreen() {
             <Text style={[styles.count, { marginTop: 4 }]}>{empCount}</Text>
             <Text style={styles.countLbl}>موظف</Text>
           </View>
+          <DeleteButton item={item} />
         </Pressable>
       );
     }
@@ -255,11 +493,53 @@ export default function ManagementScreen() {
                 {item.group && item.group !== "none" ? <View style={[styles.miniBadge, { backgroundColor: theme.colors.brandSecondary + "20" }]}><Text style={[styles.miniBadgeText, { color: theme.colors.brandSecondary }]}>مجموعة {item.group}</Text></View> : null}
               </View>
               {loc && <Text style={styles.subtle}>{loc.name}</Text>}
+              {(() => {
+                const balance = calculateLeaveBalance(item.id);
+
+                return (
+                  <View style={styles.leaveBalanceBox}>
+                    <View style={styles.leaveBalanceItem}>
+                      <Text style={styles.leaveBalanceValue}>{balance.annual}</Text>
+                      <Text style={styles.leaveBalanceLabel}>السنوي</Text>
+                    </View>
+                    <View style={styles.leaveBalanceItem}>
+                      <Text style={styles.leaveBalanceValue}>{balance.used}</Text>
+                      <Text style={styles.leaveBalanceLabel}>المستخدم</Text>
+                      {(balance.manuallyUsed > 0 ||
+                        balance.approvedLeaveDays > 0) && (
+                          <Text style={styles.leaveBalanceDetails}>
+                            سابق: {balance.manuallyUsed} + مسجل:{" "}
+                            {balance.approvedLeaveDays}
+                          </Text>
+                        )}
+                    </View>
+                    <View style={styles.leaveBalanceItem}>
+                      <Text
+                        style={[
+                          styles.leaveBalanceValue,
+                          {
+                            color:
+                              balance.remaining <= 5
+                                ? theme.colors.error
+                                : theme.colors.success,
+                          },
+                        ]}
+                      >
+                        {balance.remaining}
+                      </Text>
+                      <Text style={styles.leaveBalanceLabel}>المتبقي</Text>
+                    </View>
+                  </View>
+                );
+              })()}
             </View>
             <View style={[styles.badge, { backgroundColor: activeLeave ? theme.colors.warning + "20" : theme.colors.success + "20" }]}>
               <Text style={[styles.badgeText, { color: activeLeave ? theme.colors.warning : theme.colors.success }]}>{activeLeave ? "في إجازة" : "على رأس العمل"}</Text>
             </View>
           </Pressable>
+          <View style={styles.managementActions}>
+            <DeleteButton item={item} />
+          </View>
           {item.phone ? (
             <View style={styles.contactRow}>
               <Pressable testID={`call-${item.id}`} onPress={() => openDialer(item.phone)} style={[styles.contactBtn, { backgroundColor: theme.colors.brandPrimary }]}>
@@ -291,6 +571,7 @@ export default function ManagementScreen() {
           <View style={[styles.badge, { backgroundColor: isActive ? theme.colors.warning + "20" : isPast ? theme.colors.surfaceTertiary : theme.colors.info + "20" }]}>
             <Text style={[styles.badgeText, { color: isActive ? theme.colors.warning : isPast ? theme.colors.onSurfaceTertiary : theme.colors.info }]}>{isActive ? "نشطة" : isPast ? "منتهية" : "قادمة"}</Text>
           </View>
+          <DeleteButton item={item} />
         </Pressable>
       );
     }
@@ -312,6 +593,7 @@ export default function ManagementScreen() {
             <Text style={styles.cost}>{item.cost.toLocaleString()} ر.س</Text>
             <View style={[styles.badge, { backgroundColor: stColor + "20", marginTop: 4 }]}><Text style={[styles.badgeText, { color: stColor }]}>{stLabel}</Text></View>
           </View>
+          <DeleteButton item={item} />
         </Pressable>
       );
     }
@@ -328,6 +610,7 @@ export default function ManagementScreen() {
             <Text style={styles.subtle}>{item.date}{dist > 0 && ` • ${dist} كم`}</Text>
           </View>
           {(item.photo_before || item.photo_after) && <Ionicons name="camera" size={18} color={theme.colors.brandPrimary} />}
+          <DeleteButton item={item} />
         </Pressable>
       );
     }
@@ -347,6 +630,7 @@ export default function ManagementScreen() {
             <Text style={styles.cost}>{item.cost.toLocaleString()} ر.س</Text>
             <View style={[styles.badge, { backgroundColor: closed ? theme.colors.success + "20" : theme.colors.warning + "20", marginTop: 4 }]}><Text style={[styles.badgeText, { color: closed ? theme.colors.success : theme.colors.warning }]}>{closed ? "مغلقة" : "مفتوحة"}</Text></View>
           </View>
+          <DeleteButton item={item} />
         </Pressable>
       );
     }
@@ -371,6 +655,9 @@ export default function ManagementScreen() {
               <View style={[styles.badge, { backgroundColor: paid ? theme.colors.success + "20" : theme.colors.error + "20", marginTop: 4 }]}><Text style={[styles.badgeText, { color: paid ? theme.colors.success : theme.colors.error }]}>{paid ? "مسددة" : "غير مسددة"}</Text></View>
             </View>
           </Pressable>
+          <View style={styles.managementActions}>
+            <DeleteButton item={item} />
+          </View>
           {item.employee_id && emp?.phone && (
             <View style={styles.contactRow}>
               <Pressable testID={`notify-violation-${item.id}`} onPress={() => askNotifyViolation(item.id)} style={[styles.contactBtn, { backgroundColor: "#25D366" }]}>
@@ -465,6 +752,50 @@ export default function ManagementScreen() {
                 ))}
               </View>
             </Field>
+            <View style={styles.leaveBalanceEditSection}>
+              <Text style={styles.leaveBalanceEditTitle}>
+                إعداد رصيد الإجازات
+              </Text>
+
+              <Field label="الرصيد السنوي">
+                <TextInput
+                  style={inputStyle}
+                  value={String(
+                    form.annual_leave_balance ??
+                    DEFAULT_ANNUAL_LEAVE_BALANCE
+                  )}
+                  onChangeText={(value) =>
+                    setForm({
+                      ...form,
+                      annual_leave_balance: value.replace(/[^0-9]/g, ""),
+                    })
+                  }
+                  keyboardType="number-pad"
+                  placeholder="30"
+                />
+              </Field>
+
+              <Field label="المستخدم سابقًا">
+                <TextInput
+                  style={inputStyle}
+                  value={String(form.leave_used_days ?? 0)}
+                  onChangeText={(value) =>
+                    setForm({
+                      ...form,
+                      leave_used_days: value.replace(/[^0-9]/g, ""),
+                    })
+                  }
+                  keyboardType="number-pad"
+                  placeholder="0"
+                />
+              </Field>
+
+              <Text style={styles.leaveBalanceEditHint}>
+                المستخدم سابقًا يُضاف إلى أيام الإجازات المعتمدة المسجلة
+                في النظام، ثم يُحسب المتبقي تلقائيًا.
+              </Text>
+            </View>
+
             <Field label="المقر">
               <SearchPicker label="اختر المقر" items={locationItems} value={form.location_id} onChange={(v) => setForm({ ...form, location_id: v })} testID="emp-location-picker" />
             </Field>
@@ -475,6 +806,55 @@ export default function ManagementScreen() {
             <Field label="الموظف *">
               <SearchPicker label="ابحث عن موظف" items={employeeItems} value={form.employee_id} onChange={(v) => setForm({ ...form, employee_id: v })} allowClear={false} testID="leave-employee-picker" />
             </Field>
+
+            {selectedEmployeeLeaveBalance && (
+              <View style={styles.leaveFormBalanceBox}>
+                <Text style={styles.leaveFormBalanceTitle}>
+                  رصيد الإجازات لعام {currentYear}
+                </Text>
+
+                <View style={styles.leaveFormBalanceRow}>
+                  <Text style={styles.leaveFormBalanceText}>
+                    السنوي: {selectedEmployeeLeaveBalance.annual} يوم
+                  </Text>
+                  <Text style={styles.leaveFormBalanceText}>
+                    المستخدم: {selectedEmployeeLeaveBalance.used} يوم
+                  </Text>
+                  <Text
+                    style={[
+                      styles.leaveFormBalanceText,
+                      {
+                        color:
+                          requestedLeaveDays >
+                            selectedEmployeeLeaveBalance.remaining
+                            ? theme.colors.error
+                            : theme.colors.success,
+                      },
+                    ]}
+                  >
+                    المتبقي: {selectedEmployeeLeaveBalance.remaining} يوم
+                  </Text>
+                </View>
+
+                {requestedLeaveDays > 0 && (
+                  <Text
+                    style={[
+                      styles.requestedLeaveText,
+                      {
+                        color:
+                          requestedLeaveDays >
+                            selectedEmployeeLeaveBalance.remaining
+                            ? theme.colors.error
+                            : theme.colors.onSurfaceSecondary,
+                      },
+                    ]}
+                  >
+                    مدة الإجازة المحددة: {requestedLeaveDays} يوم
+                  </Text>
+                )}
+              </View>
+            )}
+
             <Field label="نوع الإجازة">
               <View style={{ padding: 12, backgroundColor: theme.colors.brandTertiary, borderRadius: theme.radius.md }}>
                 <Text style={{ color: theme.colors.onBrandTertiary, textAlign: "right", fontWeight: "700" }}>إجازة سنوية</Text>
@@ -639,4 +1019,95 @@ const styles = StyleSheet.create({
   pill: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: theme.radius.pill, backgroundColor: theme.colors.surface, borderWidth: 1, borderColor: theme.colors.border },
   pillActive: { backgroundColor: theme.colors.brandPrimary, borderColor: theme.colors.brandPrimary },
   pillText: { fontSize: 13, color: theme.colors.onSurface, fontWeight: "600" },
+  managementActions: { flexDirection: "row-reverse", marginTop: theme.spacing.sm, paddingTop: theme.spacing.sm, borderTopWidth: 1, borderTopColor: theme.colors.divider },
+  deleteActionButton: { minWidth: 74, minHeight: 38, paddingHorizontal: 10, flexDirection: "row-reverse", alignItems: "center", justifyContent: "center", gap: 5, borderRadius: theme.radius.md, backgroundColor: theme.colors.error + "10", borderWidth: 1, borderColor: theme.colors.error + "40" },
+  deleteActionText: { color: theme.colors.error, fontSize: 12, fontWeight: "700" },
+  leaveBalanceBox: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 6,
+    marginTop: 10,
+    padding: 8,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  leaveBalanceItem: {
+    flex: 1,
+    alignItems: "center",
+  },
+  leaveBalanceValue: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: theme.colors.brandPrimary,
+  },
+  leaveBalanceLabel: {
+    marginTop: 2,
+    fontSize: 10,
+    color: theme.colors.onSurfaceTertiary,
+  },
+  leaveFormBalanceBox: {
+    marginBottom: theme.spacing.md,
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.brandTertiary,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  leaveFormBalanceTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: theme.colors.onBrandTertiary,
+    textAlign: "right",
+  },
+  leaveFormBalanceRow: {
+    flexDirection: "row-reverse",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 8,
+  },
+  leaveFormBalanceText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: theme.colors.onSurfaceSecondary,
+    textAlign: "right",
+  },
+  requestedLeaveText: {
+    marginTop: 8,
+    fontSize: 12,
+    fontWeight: "700",
+    textAlign: "right",
+  },
+  leaveBalanceDetails: {
+    marginTop: 2,
+    fontSize: 8,
+    color: theme.colors.onSurfaceTertiary,
+    textAlign: "center",
+  },
+  leaveBalanceEditSection: {
+    marginBottom: theme.spacing.md,
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceSecondary,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  leaveBalanceEditTitle: {
+    marginBottom: 10,
+    fontSize: 14,
+    fontWeight: "800",
+    color: theme.colors.onSurface,
+    textAlign: "right",
+  },
+  leaveBalanceEditHint: {
+    marginTop: 2,
+    fontSize: 11,
+    lineHeight: 17,
+    color: theme.colors.onSurfaceTertiary,
+    textAlign: "right",
+  },
+  disabledAction: { opacity: 0.5 },
 });
