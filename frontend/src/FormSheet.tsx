@@ -16,7 +16,7 @@ type Props = {
   visible: boolean;
   title: string;
   onClose: () => void;
-  onSubmit: () => void;
+  onSubmit: () => void | Promise<void>;
   submitLabel?: string;
   children: React.ReactNode;
   testID?: string;
@@ -31,6 +31,15 @@ export const FormSheet: React.FC<Props> = ({
   children,
   testID,
 }) => {
+  const handleSubmit = async () => {
+    try {
+      console.log("تم الضغط على زر الحفظ");
+      await onSubmit();
+    } catch (error) {
+      console.error("خطأ أثناء الحفظ:", error);
+    }
+  };
+
   return (
     <Modal
       visible={visible}
@@ -39,21 +48,27 @@ export const FormSheet: React.FC<Props> = ({
       onRequestClose={onClose}
     >
       <View style={styles.overlay} testID={testID}>
-        {/* الضغط على الخلفية يغلق النافذة */}
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        {/* خلفية النافذة */}
+        <Pressable
+          style={styles.backdrop}
+          onPress={onClose}
+          accessibilityLabel="إغلاق النافذة"
+        />
 
         <KeyboardAvoidingView
           style={styles.keyboardView}
           behavior={Platform.OS === "ios" ? "padding" : undefined}
+          pointerEvents="box-none"
         >
           <View style={styles.sheet}>
-            {/* الرأس ثابت دائمًا */}
             <View style={styles.header}>
               <Pressable
                 onPress={onClose}
                 testID="form-close"
                 style={styles.headerButton}
+                accessibilityRole="button"
                 accessibilityLabel="إغلاق"
+                hitSlop={10}
               >
                 <Ionicons
                   name="close"
@@ -67,20 +82,25 @@ export const FormSheet: React.FC<Props> = ({
               </Text>
 
               <Pressable
-                onPress={onSubmit}
+                onPress={handleSubmit}
                 testID="form-submit"
-                style={styles.headerButton}
+                style={({ pressed }) => [
+                  styles.headerButton,
+                  styles.submitButton,
+                  pressed && styles.buttonPressed,
+                ]}
+                accessibilityRole="button"
                 accessibilityLabel={submitLabel}
+                hitSlop={10}
               >
                 <Text style={styles.submit}>{submitLabel}</Text>
               </Pressable>
             </View>
 
-            {/* الحقول فقط هي التي تتحرك */}
             <ScrollView
               style={styles.body}
               contentContainerStyle={styles.bodyContent}
-              keyboardShouldPersistTaps="handled"
+              keyboardShouldPersistTaps="always"
               showsVerticalScrollIndicator
               nestedScrollEnabled
             >
@@ -123,10 +143,17 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
 
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 0,
+  },
+
   keyboardView: {
     width: "100%",
     maxHeight: "92%",
     justifyContent: "flex-end",
+    zIndex: 1,
+    elevation: 1,
   },
 
   sheet: {
@@ -138,6 +165,8 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: theme.radius.lg,
     borderTopRightRadius: theme.radius.lg,
     overflow: "hidden",
+    zIndex: 2,
+    elevation: 5,
   },
 
   header: {
@@ -149,6 +178,8 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceSecondary,
+    zIndex: 10,
+    elevation: 10,
   },
 
   headerButton: {
@@ -156,6 +187,15 @@ const styles = StyleSheet.create({
     minHeight: 48,
     alignItems: "center",
     justifyContent: "center",
+    zIndex: 20,
+  },
+
+  submitButton: {
+    cursor: Platform.OS === "web" ? "pointer" : undefined,
+  },
+
+  buttonPressed: {
+    opacity: 0.6,
   },
 
   title: {
