@@ -15,7 +15,8 @@
       "bundleIdentifier": "sa.amnalmuqarrat.app"
     },
     "web": {
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/favicon.png",
+      "output": "single"
     }
   }
 }
